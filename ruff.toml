@@ -1,0 +1,25 @@
+exclude = [
+    ".git",
+    ".venv",
+    "venv",
+    "*.egg-info",
+    "__pycache__",
+    "research",
+    "data",
+    # copied into the public tree and linted THERE (ruff classifies
+    # meridian_pipeline imports differently from this location)
+    "scripts/showcase/overlay",
+]
+
+line-length = 100
+
+[lint]
+select = ["E", "F", "W", "I"]
+ignore = [
+    "E402",  # module-level imports not at top: intentional for deferred/conditional imports
+    "E501",  # line too long: SQL strings and research code routinely exceed 100 chars
+]
+
+[lint.per-file-ignores]
+"scripts/*" = ["F841", "E731"]   # scripts are exploratory, relax unused-var + lambda
+"tests/*"   = ["F841"]           # test fixtures may assign for clarity

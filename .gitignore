@@ -1,0 +1,31 @@
+# Secrets and local environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+pytest-dagster.log
+
+# Local data and generated artifacts (never tracked)
+data/
+research/
+reports/
+*.parquet
+*.ipynb
+*.ipynb_checkpoints
+
+# OS
+.DS_Store
+
+# Export audit artefact, not part of the published tree
+SHOWCASE_MANIFEST.json

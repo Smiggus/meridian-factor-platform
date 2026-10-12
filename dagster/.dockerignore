@@ -1,0 +1,14 @@
+.git/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+.env
+.env.*
+
+Dockerfile
+docker-compose.yml

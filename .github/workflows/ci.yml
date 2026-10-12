@@ -1,0 +1,39 @@
+# Lint, format and test. The private repository also builds both container
+# images (API and Dagster code location), cuts semantic-release versions and
+# notifies its dependency bot; those stages need a registry and a cluster and
+# are not part of the showcase.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # ruff is pinned: an unpinned ruff silently reformats files and turns
+      # every open change red without any code change.
+      - run: pip install --quiet ruff==0.15.12
+      - run: ruff check .
+      - run: ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      # the dagster set is a superset of the API set, so one install runs the
+      # whole suite (the dagster-guarded tests skip silently without it)
+      - run: pip install --quiet -r dagster/requirements.txt -r requirements.txt -r requirements-test.txt
+      - run: pytest tests/ -v --tb=short -rs -m "not integration"

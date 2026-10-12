@@ -1,0 +1,84 @@
+[project]
+name = "meridian-core"
+version = "0.0.0"
+description = "Engineering core of a point-in-time factor scoring service: FastAPI read layer, score write path, data-quality checks, burst ship-back, lakehouse IO and alerting sensors"
+requires-python = ">=3.11"
+# Runtime deps of the FastAPI API image (root Dockerfile). requirements*.txt
+# are pinned exports of the dependency groups below.
+dependencies = [
+    # Data & analysis
+    "pandas>=2.0",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "polars[rtcompat]>=1.0.0",
+    "duckdb>=1.2.0",
+    "pyarrow>=14.0",
+    "python-dateutil>=2.8",
+    # Database (factor scores live in PostgreSQL)
+    "sqlalchemy>=2.0",
+    "psycopg2-binary>=2.9",
+    # API server
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.30.0",
+    "python-jose[cryptography]>=3.3.0",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0.0",
+    "tqdm>=4.66",
+]
+
+[dependency-groups]
+dev = [{ include-group = "test" }, { include-group = "lint" }]
+test = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-mock>=3.12",
+    "httpx>=0.27",  # FastAPI TestClient transport
+]
+lint = [
+    # Pinned: an unpinned ruff silently reformats files and turns every open
+    # change red without any code change.
+    "ruff==0.15.12",
+]
+# Dependencies of the Dagster code-location image (dagster/Dockerfile).
+dagster = [
+    "dagster>=1.13,<2",
+    "dagster-k8s>=0.29",
+    # kubernetes 36.0.0 sends no Authorization header under in-cluster auth
+    # against dagster-k8s (401 on every k8s_job_executor call); pin to v35.
+    "kubernetes<36",
+    "dagster-postgres>=0.29",
+    "dagster-docker>=0.29",
+    # S3ComputeLogManager uploads captured stdout/stderr to object storage
+    "dagster-aws>=0.23.0",
+    # grpcio 1.82 regenerated its gencode against protobuf 7, but the dagster
+    # gRPC stack caps protobuf<7: the code server crashes at import. Pin.
+    "grpcio<1.82",
+    "grpcio-health-checking<1.82",
+    "grpcio-status<1.82",
+    "pandas>=2.0",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "polars[rtcompat]>=1.0.0",
+    "duckdb>=1.2.0",
+    "pyarrow>=14.0",
+    # authenticated (OIDC) access to the Iceberg warehouse
+    "pyiceberg[pyiceberg-core]>=0.11,<0.12",
+    "python-dateutil>=2.8",
+    "sqlalchemy>=2.0",
+    "psycopg2-binary>=2.9",
+    "requests>=2.31",
+    "python-dotenv>=1.0.0",
+    "tqdm>=4.66",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+# "not integration" is a default, not a hard exclude: an explicit
+# `-m integration` on the CLI overrides addopts rather than ANDing with it.
+addopts = "-v --tb=short -m 'not integration'"
+markers = [
+    "integration: requires live production infrastructure (PostgreSQL and/or object storage). Skipped by default; CI never runs these.",
+]
