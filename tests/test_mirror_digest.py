@@ -62,6 +62,14 @@ def test_duplicate_key_fails_closed():
         evidence([A, A[:4] + (9.0, *A[5:])])
 
 
+def test_identities_key_counts_distinct_labels_not_rows():
+    other = (A[0], "ABC", "value", "value", 3.0, 0.1, 1, NOW)
+    assert evidence([A, B, other])["rows"] == 3
+    assert evidence([A, B, other])["identities"] == 2
+    no_label = content_evidence([(A[0], "ABC", 1.0)], ("score_date", "ticker", "x"), ("ticker",))
+    assert no_label["identities"] == 0
+
+
 def test_group_identity_and_null_finite_normalization():
     cols = ("score_date", "ticker", "group_name", "group_score")
     key = ("score_date", "ticker", "group_name")

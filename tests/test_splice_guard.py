@@ -176,5 +176,103 @@ def test_polars_short_gap_not_flagged():
     assert not df["gap"].any()
 
 
+def _three_variant_flags(dates: list[date], window: int) -> tuple[list, list, list]:
+    """Row-by-row gap flag for one ticker from the polars, pandas and numpy
+    variants, each given the same trailing `window`-row slice."""
+    df = _polars_long_frame([(d, "X", 0.001) for d in dates])
+    polars_flags = (
+        df.with_columns(polars_window_gap_mask(window_size=window).alias("gap"))["gap"]
+    ).to_list()
+    pandas_flags, numpy_flags = [], []
+    for i in range(len(dates)):
+        win = dates[max(0, i - window + 1) : i + 1]
+        frame = pd.DataFrame({"X": 0.001}, index=pd.DatetimeIndex(win))
+        pandas_flags.append(bool(pandas_window_has_gap(frame)["X"]))
+        numpy_flags.append(
+            bool(
+                numpy_window_has_gap(
+                    np.array(win, dtype="datetime64[D]"), np.ones((len(win), 1), dtype=bool)
+                )[0]
+            )
+        )
+    return polars_flags, pandas_flags, numpy_flags
+
+
+def test_polars_matches_pandas_and_numpy_around_a_splice():
+    # 10 old rows, a multi-year gap, 12 new rows; window of 5 rows.
+    old = _bdate_range(date(2000, 1, 3), 10)
+    new = _bdate_range(date(2025, 1, 6), 12)
+    polars_flags, pandas_flags, numpy_flags = _three_variant_flags(old + new, window=5)
+    assert polars_flags == pandas_flags == numpy_flags
+    first_new = len(old)
+    # Windows that hold both old and new rows are flagged; the window that
+    # starts on the first new row holds only new rows and is not.
+    assert polars_flags[first_new]
+    assert polars_flags[first_new + 3]
+    assert not polars_flags[first_new + 4]
+    assert not polars_flags[-1]
+
+
+def test_polars_window_starting_just_after_a_splice_is_not_flagged():
+    # Exactly `window` rows since the splice: the window's first row is the
+    # first post-splice row. The gap before it is outside the window.
+    window = 252
+    old = _bdate_range(date(2000, 1, 3), 40)
+    new = _bdate_range(date(2025, 1, 6), window)
+    df = _polars_long_frame([(d, "REUSED1", 0.001) for d in old + new])
+    df = df.with_columns(polars_window_gap_mask(window_size=window, min_samples=200).alias("gap"))
+    assert not df["gap"][-1]
+    # One row earlier the window still reaches back across the splice.
+    assert df["gap"][-2]
+
+
+def test_polars_leading_gap_flags_window_starting_on_first_post_splice_row():
+    # A return-sum caller measures the first return in the window
+    # from the row before it, so that window still spans the splice.
+    window = 252
+    old = _bdate_range(date(2000, 1, 3), 40)
+    new = _bdate_range(date(2025, 1, 6), window)
+    df = _polars_long_frame([(d, "REUSED1", 0.001) for d in old + new])
+    df = df.with_columns(
+        polars_window_gap_mask(window_size=window, min_samples=200, include_leading_gap=True).alias(
+            "gap"
+        )
+    )
+    assert df["gap"][-2]
+    assert df["gap"][-1]
+
+
+def test_polars_leading_gap_clears_one_row_later():
+    window = 252
+    old = _bdate_range(date(2000, 1, 3), 40)
+    new = _bdate_range(date(2025, 1, 6), window + 1)
+    df = _polars_long_frame([(d, "REUSED1", 0.001) for d in old + new])
+    df = df.with_columns(
+        polars_window_gap_mask(window_size=window, min_samples=200, include_leading_gap=True).alias(
+            "gap"
+        )
+    )
+    assert df["gap"][-2]
+    assert not df["gap"][-1]
+
+
+def test_polars_gap_mask_is_per_ticker():
+    old = _bdate_range(date(2000, 1, 3), 10)
+    new = _bdate_range(date(2025, 1, 6), 10)
+    rows = [(d, "SPLICED", 0.001) for d in old + new]
+    rows += [(d, "CLEAN", 0.001) for d in _bdate_range(date(2024, 1, 1), 20)]
+    df = _polars_long_frame(rows).with_columns(polars_window_gap_mask(window_size=5).alias("gap"))
+    assert df.filter(pl.col("ticker") == "SPLICED")["gap"].any()
+    assert not df.filter(pl.col("ticker") == "CLEAN")["gap"].any()
+
+
+def test_polars_one_row_window_has_no_internal_gap():
+    old = _bdate_range(date(2000, 1, 3), 3)
+    new = _bdate_range(date(2025, 1, 6), 3)
+    df = _polars_long_frame([(d, "X", 0.001) for d in old + new])
+    df = df.with_columns(polars_window_gap_mask(window_size=1).alias("gap"))
+    assert not df["gap"].any()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))

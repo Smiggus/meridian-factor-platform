@@ -113,9 +113,10 @@ def test_raising_check_alerts_as_ERRORED_and_does_not_fail_the_run(sent):
     assert sent[0][1][1] == "check_thing"
 
 
-def test_blocking_check_reraises_after_alerting(sent):
+def test_blocking_check_reraises_and_leaves_the_page_to_the_run_failure_sensor(sent):
     """A blocking check must still fail its step - silence there would be a
-    false green - but the alert goes out first."""
+    false green. The failed step makes ntfy_run_failure_sensor page, so the
+    wrapper must not also page: one incident, one alert."""
 
     @alerting.alerting_check("momentum_scores", swallow_errors=False)
     def check_thing(context):
@@ -123,7 +124,43 @@ def test_blocking_check_reraises_after_alerting(sent):
 
     with pytest.raises(ValueError):
         check_thing(_Ctx())
-    assert [c[0] for c in sent] == ["errored"]
+    assert sent == []
+
+
+def test_passing_result_is_stamped_passed(sent):
+    @alerting.alerting_check("composite_scores")
+    def check_thing(context):
+        return AssetCheckResult(passed=True, metadata={"rows": MetadataValue.int(3)})
+
+    result = check_thing(_Ctx())
+    assert result.metadata["outcome"].text == "passed"
+    assert result.metadata["rows"].value == 3
+
+
+def test_failing_result_is_stamped_failed(sent):
+    @alerting.alerting_check("composite_scores")
+    def check_thing(context):
+        return AssetCheckResult(passed=False, severity=AssetCheckSeverity.WARN)
+
+    result = check_thing(_Ctx())
+    assert result.metadata["outcome"].text == "failed"
+    assert [c[0] for c in sent] == ["failed"]
+
+
+def test_outcome_set_by_the_check_is_kept(sent):
+    @alerting.alerting_check("composite_scores")
+    def check_thing(context):
+        return AssetCheckResult(passed=True, metadata={"outcome": MetadataValue.text("custom")})
+
+    assert check_thing(_Ctx()).metadata["outcome"].text == "custom"
+
+
+def test_stamping_also_applies_when_blocking(sent):
+    @alerting.alerting_check("momentum_scores", swallow_errors=False)
+    def check_thing(context):
+        return AssetCheckResult(passed=True)
+
+    assert check_thing(_Ctx()).metadata["outcome"].text == "passed"
 
 
 def test_alert_transport_failure_never_breaks_the_check(monkeypatch):

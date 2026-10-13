@@ -28,8 +28,9 @@ WARN.
 NaN is a value in PostgreSQL, not a NULL, and it sorts above every other number. A NULL adj_close
 passes through the `IS NULL` clause and COALESCE returns close. A NaN fails `adj_close <= 1.1 *
 close`, so it counts as rejected and is also replaced by close. The numpy mirror splits this up
-differently: is_rejected needs finite inputs and says False for NaN, and guarded_px swaps NaN for
-close in a separate step. Both paths end with the same price.
+differently: is_rejected says False for NaN and True for +inf, and guarded_px swaps NaN for
+close in a separate step. Both paths end with the same price. The guard is one-sided, so -inf,
+zero and negative values are not policed.
 """
 
 import logging
@@ -91,7 +92,9 @@ def is_rejected(adj_close, close, ratio: float = ADJ_CLOSE_MAX_RATIO):
     """Pandas/numpy mirror of `NOT guard_sql(...)`.
 
     Returns a boolean array: True where the row's adj_close is implausible.
-    Kept in lockstep with the SQL predicate.
+    A +inf adj_close is rejected, as in SQL. A NaN adj_close is not flagged
+    here, but `guarded_px` still serves `close` for it, which is what the SQL
+    expression does. Kept in lockstep with the SQL predicate.
     """
     import numpy as np
     import pandas as pd
@@ -100,7 +103,7 @@ def is_rejected(adj_close, close, ratio: float = ADJ_CLOSE_MAX_RATIO):
     cl = pd.to_numeric(pd.Series(close), errors="coerce").to_numpy(dtype=float)
     with np.errstate(invalid="ignore"):
         return np.asarray(
-            np.isfinite(adj) & np.isfinite(cl) & (cl > 0) & (adj > ratio * cl),
+            ~np.isnan(adj) & np.isfinite(cl) & (cl > 0) & (adj > ratio * cl),
             dtype=bool,
         )
 

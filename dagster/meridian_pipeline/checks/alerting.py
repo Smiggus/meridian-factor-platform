@@ -15,10 +15,14 @@ A wrapped check reports one of three outcomes, stamped into the result metadata 
 A check that has raised for a month looks the same as one that has failed for a month, so an
 `errored` check gets its own alert, title and tag.
 
-The wrapper must not fail the run. With `swallow_errors=True`, the default, an exception becomes
-a WARN result, as in `data_quality_checks._warn_on_error`. Blocking checks pass
-`swallow_errors=False`: the exception propagates and fails the step, the run-failure sensor does
-the alerting, and swallowing the error there would give a false green.
+The wrapper adds `outcome` to a returned result unless the check already set its own `outcome`
+key.
+
+With `swallow_errors=True`, the default, an exception becomes a WARN result, as in
+`data_quality_checks._warn_on_error`, so the run does not fail, and the wrapper sends the
+`errored` alert itself. Blocking checks pass `swallow_errors=False`: the exception propagates and
+fails the step, and the run-failure sensor (`ntfy_run_failure_sensor`) does the alerting. The
+wrapper sends nothing in that case, so an erroring blocking check pages once, not twice.
 """
 
 from __future__ import annotations
@@ -54,12 +58,8 @@ def alerting_check(asset_name: str, *, swallow_errors: bool = True):
                 result = fn(context)
             except Exception as exc:  # noqa: BLE001 - see module docstring
                 if not swallow_errors:
-                    try:
-                        notify_errored_check(
-                            asset_name, check_name, exc, log=getattr(context, "log", None)
-                        )
-                    except Exception:  # noqa: BLE001 - alerting never masks the error
-                        pass
+                    # The step fails, so ntfy_run_failure_sensor pages. Alerting
+                    # here as well would send the same incident twice.
                     raise
                 try:
                     notify_errored_check(
@@ -96,11 +96,22 @@ def alerting_check(asset_name: str, *, swallow_errors: bool = True):
                 log = getattr(context, "log", None)
                 if log is not None:
                     log.warning(f"[{check_name}] ntfy alert failed: {exc}")
-            return result
+            return _with_outcome(result)
 
         return wrapper
 
     return decorate
+
+
+def _with_outcome(result):
+    """Return `result` with `outcome` set to passed or failed, if it has none."""
+    if result is None or not hasattr(result, "_replace"):
+        return result
+    metadata = dict(result.metadata or {})
+    if "outcome" in metadata:
+        return result
+    metadata["outcome"] = MetadataValue.text("passed" if result.passed else "failed")
+    return result._replace(metadata=metadata)
 
 
 def _detail_from(result: AssetCheckResult) -> str:

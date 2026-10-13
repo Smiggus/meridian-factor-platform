@@ -40,12 +40,30 @@ def polars_window_gap_mask(
     date_col: str = "date",
     ticker_col: str = "ticker",
     max_gap_days: int = MAX_INTERNAL_GAP_DAYS,
+    include_leading_gap: bool = False,
 ) -> pl.Expr:
     """Boolean Polars expression, True where the trailing row-count window
     (window_size, matching the caller's own rolling_sum/rolling_mean call)
     contains an internal date gap larger than max_gap_days - i.e. the window
     straddles a ticker-reuse splice and the value computed over it should be
     discarded.
+
+    By default only gaps between two rows that are both inside the window
+    count, the same as `pandas_window_has_gap` and `numpy_window_has_gap`. A
+    window of N rows has N - 1 such gaps. The gap between the window's first
+    row and the row before it lies outside the window, so a window that
+    starts on the first row after a splice holds only one company's rows and
+    is not flagged. Use this form when the value is computed from the rows'
+    own levels (prices), where the first row of the window does not depend on
+    the row before it.
+
+    With include_leading_gap=True the gap from the row before the window to
+    the window's first row is checked as well, so N gaps are examined. Use
+    this form when the value is a sum or product of per-row returns: the
+    first return in the window is measured from the row before the window,
+    so a return that spans a splice is part of the window's value even though
+    the row it is measured from is not. A caller that sums ret_1d over the
+    window uses this form.
 
     The input frame must be sorted by (ticker_col, date_col) before this
     expression is evaluated (same precondition as any rolling_*().over(...)
@@ -55,8 +73,15 @@ def polars_window_gap_mask(
     caller's own rolling aggregate; this expression only adds the
     orthogonal "does the window straddle a big gap" check.
     """
+    # diff() at a row is the gap back to the previous row. The window's first
+    # row owns the gap before the window, so the last window_size - 1 diffs
+    # are the internal ones and all window_size diffs include the leading gap.
+    n_gaps = window_size if include_leading_gap else window_size - 1
+    if n_gaps < 1:
+        # A one-row window has no internal gap.
+        return pl.lit(False)
     day_gap = pl.col(date_col).diff().over(ticker_col).dt.total_days()
-    max_gap_in_window = day_gap.rolling_max(window_size=window_size, min_samples=1).over(ticker_col)
+    max_gap_in_window = day_gap.rolling_max(window_size=n_gaps, min_samples=1).over(ticker_col)
     return (max_gap_in_window > max_gap_days).fill_null(False)
 
 

@@ -65,8 +65,9 @@ def chain_spotcheck(
 ) -> ChainSpotCheckResult:
     """Check that the ret_1d chain on a ticker equals close_ratio plus dividends.
 
-    Passes when chained_ret >= close_ratio - tol_abs, since the chain can only be lower
-    than the close ratio if it has the off-by-one. The implied dividend, chained_ret minus
+    Passes when chained_ret >= close_ratio - tol_abs. The chain should be at least the close
+    ratio, so a shortfall larger than tol_abs (5 bp by default) points to the off-by-one; a
+    smaller shortfall is tolerated as rounding. The implied dividend, chained_ret minus
     close_ratio, must also stay under 0.10. Over a quarter that is far above any yield
     among the tickers in SPOTCHECK_CASES, so a larger gap points at bad data or a bug.
     """

@@ -45,6 +45,17 @@ def content_evidence(
 
     SQLite's bounded page cache and file-backed sort avoid row-count-sized Python
     collections. Scratch follows MERIDIAN_MIRROR_SCRATCH_DIR, then TMPDIR.
+
+    Returns {"rows", "identities", "digest"}:
+
+    - rows: number of rows seen.
+    - identities: number of DISTINCT factor_name (or group_name) values, not
+      the number of row identities. It is 1 for a single-factor date, and 0
+      when the columns carry neither label. Row identities are unique by
+      construction (a duplicate raises), so their count is always `rows`. The
+      key name is historical and is kept because both mirror sides emit it and
+      the evidence dicts are compared and reported with it.
+    - digest: sha256 over the sorted per-row hashes.
     """
     identity_indexes = tuple(columns.index(name) for name in identity_columns)
     label = next((columns.index(c) for c in ("factor_name", "group_name") if c in columns), None)
@@ -68,11 +79,11 @@ def content_evidence(
                 payload = json.dumps(
                     [_canonical(v) for v in row], separators=(",", ":"), ensure_ascii=False
                 )
-                factor = json.dumps(_canonical(row[label])) if label is not None else None
+                label_value = json.dumps(_canonical(row[label])) if label is not None else None
                 try:
                     db.execute(
                         "INSERT INTO rows VALUES (?, ?, ?)",
-                        (identity, hashlib.sha256(payload.encode("utf-8")).digest(), factor),
+                        (identity, hashlib.sha256(payload.encode("utf-8")).digest(), label_value),
                     )
                 except sqlite3.IntegrityError as exc:
                     raise ValueError("duplicate mirror identity") from exc
@@ -80,7 +91,7 @@ def content_evidence(
             digest = hashlib.sha256()
             for (row_hash,) in db.execute("SELECT hash FROM rows ORDER BY hash"):
                 digest.update(row_hash)
-            factors = db.execute("SELECT COUNT(DISTINCT label) FROM rows").fetchone()[0]
-            return {"rows": count, "identities": factors, "digest": digest.hexdigest()}
+            label_count = db.execute("SELECT COUNT(DISTINCT label) FROM rows").fetchone()[0]
+            return {"rows": count, "identities": label_count, "digest": digest.hexdigest()}
         finally:
             db.close()
