@@ -64,7 +64,7 @@ _SPIKE_DV = 5_000_000.0
 
 def _prices_frame(*, ret_nan_on_last: bool, dv_nan_on_last: bool) -> pd.DataFrame:
     """Long (ticker, d, ret_1d, dollar_volume) frame for SPY + ACME over
-    _N_DAYS business days. The LAST date carries a deliberately distinctive
+    _N_DAYS business days. The LAST date carries a distinctive
     dollar volume (_SPIKE_DV) so a mis-sliced ADV window is detectable, and
     optionally has ret_1d / dollar_volume all-NaN so the corresponding pivot
     drops that date."""

@@ -1,105 +1,35 @@
-"""
-adj_close_guard.py
-------------------
-Defence-in-depth guard against corrupted `ohlcv.prices.adj_close` values
-feeding downstream price-level computations.
+"""Guard against corrupted `ohlcv.prices.adj_close` values.
 
-THE FAILURE MODE
-    A single historical row with an adj_close many orders of magnitude
-    too large relative to its close. Any price-level measure built on a historical extreme would be
-    distorted by a single poisoned row for the rest of that
-    ticker's life. The values are FINITE, so np.isfinite() gates pass them
-    straight through; only a same-row ratio test can see it.
+Now and then a historical row arrives with an adj_close many orders of magnitude above its
+close. The value is finite, so np.isfinite() gates let it through, and anything built on a
+historical extreme, a running maximum for instance, is wrong for that ticker from that row on.
+Only a comparison within the row sees it.
 
-THE DETECTOR
-    Same-row ratio `adj_close / close`, NOT a time-series (rolling-median)
-    test and NOT a ratio against `raw_close`:
+The test is `adj_close <= K * close` with K = 1.1. close is the split-adjusted series and
+adj_close is the same series with dividends applied, so an honest ratio never exceeds 1:
+dividend back-adjustment and the other corporate actions (rights issues, spin-offs, returns of
+capital) all move history down. The extra 0.1 absorbs rounding that builds up over long
+adjustment chains.
 
-    * Same-row, split-adjusted-vs-split-adjusted. `close` is the
-      split-adjusted series and `adj_close` is nominally the same series with
-      dividend adjustment applied, so the legitimate ratio is a pure
-      corporate-action factor of order 1 (and essentially 1.000 for tickers
-      that never split, where raw_close == close for their entire history).
+Two other tests were tried and dropped. A rolling median needs K above 10 to survive a stock
+that really does 10x in a year, and it still misses the corruption, because an affected ticker
+can carry a long run of bad rows and then its trailing median is bad too. A ratio against
+raw_close flags legitimate reverse splits, whose pre-split rows have adj_close/raw_close near
+1e5. The same-row ratio is unmoved by price changes and by splits.
 
-    * Price-move invariant. A stock that genuinely 10x's in a year moves
-      `close` and `adj_close` together, so the ratio does not budge. A
-      rolling-252d-median test, by contrast, needs K > 10 just to survive
-      a genuine 10x - and would still MISS this corruption, because the
-      corruption is not a one-row spike: an affected ticker can have
-      a long run of consecutive corrupted rows, so
-      its own trailing median is equally corrupted and the ratio-to-median
-      is ~1.
+A rejected row gets its own `close` in place of adj_close. It is not nulled. The first version
+nulled, which drops the observation and biases a MAX over the survivors low whenever the true
+high sat on a rejected row. Substituting keeps the observation and matches what
+COALESCE(adj_close, close) already does when adj_close is missing. close is present and positive
+on any rejected row, since the predicate needs close > 0 before it can reject. This changes
+factor values. It masks the problem and does not repair it, so every substitution is logged at
+WARN.
 
-    * Split invariant. A ratio against `raw_close` cannot separate
-      corruption from a legitimate reverse split: a ticker's pre-reverse-split
-      rows legitimately carry adj_close/raw_close of order 1e5. An adj/raw
-      guard therefore nulls legitimately reverse-split tickers outright (false
-      positives) and still leaves some tickers with an ATH far above their max
-      split-adjusted close.
-
-THE THRESHOLD (K = 1.1)
-    A loose bound such as 3.0 only catches gross multi-fold corruption. The
-    rows this guard targets are those where adj_close sits above close, which
-    no legitimate adjustment produces, so the bound is set just above 1:
-    1.1 rather than 1.001 leaves headroom for rounding accumulation over long
-    adjustment chains.
-
-    The direction is the invariant that makes a one-sided test correct:
-    dividend back-adjustment and every corporate action (rights issues,
-    spin-offs, return of capital) adjusts historical prices DOWNWARD.
-    Nothing legitimate pushes `adj_close` ABOVE the same row's `close`.
-
-SEMANTICS (substitute, do not null)
-    A rejected row's adjusted close is replaced by the SAME row's
-    `close` - the vendor split-adjusted price - not by NULL.
-
-    Nulling (the original !471 behaviour) removes the observation
-    entirely, so a MAX over the survivors is biased LOW for any ticker
-    whose true high sits on a rejected row (the nulled ATH is lower
-    than the true one). Substituting keeps the observation and removes that
-    [redacted: internal research note]
-    arguably the more correct one anyway, and it is exactly what
-    COALESCE(adj_close, close) already falls back to when adj_close is
-    missing. Substitution never invents a value: `close` is always
-    present and positive on a rejected row (the predicate requires
-    `close > 0` before it can reject).
-
-    This does change factor VALUES, not just their safety - see the WARN
-    below. It is still a mask, not a repair: the real fix stays upstream.
-    Every substitution is logged at WARN so the upstream problem remains
-    visible.
-
-NULL VS NaN (same substituted value, DIFFERENT branch)
-    A NULL adj_close and a NaN adj_close both end up serving the row's
-    `close`, but they take different branches to get there, and the two
-    are not interchangeable - PostgreSQL (and IEEE 754 generally) treats
-    NaN as NOT NULL.
-
-    A NULL adj_close PASSES the guard via the NULL branch: `guard_sql`'s
-    `adj_col IS NULL` clause is TRUE, so the row is accepted as
-    "plausible" and `guarded_px_sql` falls back to `close` through
-    `COALESCE(adj_close, close)` on the accepted side of the CASE.
-
-    A NaN adj_close is REJECTED by the ratio branch, NOT accepted by the
-    NULL branch: NaN IS NULL is FALSE (it is a real float value, not a
-    SQL NULL), so the NULL clause does not apply, and `NaN <= 1.1 *
-    close` evaluates to FALSE (NaN is not `<=` anything, including
-    itself) - so `guard_sql` as a whole is FALSE and the row is routed
-    through the CASE's ELSE (rejected) branch, which also substitutes
-    `close`. The numpy mirror (`is_rejected` / `guarded_px`) reaches the
-    same outcome via `np.isfinite(adj)`, which is FALSE for NaN.
-
-    Both branches happen to substitute the same value (`close`), so this
-    asymmetry is not itself a correctness bug here - but assuming a NaN
-    would be silently waved through the NULL path exactly like a real
-    NULL is the mistake that caused Meridian#318: a NaN was written to
-    `factors.group_scores.group_score` on the assumption a downstream
-    `group_score IS NOT NULL` completeness check would treat it the same
-    as NULL. It does not - PostgreSQL's NaN is NOT NULL - so the row read
-    as "covered" by the SQL check and "uncovered" by pandas' `.notna()`
-    elsewhere, and the two disagreed permanently. Never assume NaN and
-    NULL take the same code path just because they can look - or, as
-    here, actually be - equivalent in the final output.
+NaN is a value in PostgreSQL, not a NULL, and it sorts above every other number. A NULL adj_close
+passes through the `IS NULL` clause and COALESCE returns close. A NaN fails `adj_close <= 1.1 *
+close`, so it counts as rejected and is also replaced by close. The numpy mirror splits this up
+differently: is_rejected needs finite inputs and says False for NaN, and guarded_px swaps NaN for
+close in a separate step. Both paths end with the same price.
 """
 
 import logging
@@ -107,14 +37,10 @@ from datetime import date
 
 logger = logging.getLogger(__name__)
 
-# Maximum plausible adj_close / close ratio. See module docstring for the
-# derivation. Nothing legitimate pushes adj_close ABOVE close, so the true
-# bound is 1.0; 1.1 is that bound plus headroom for rounding accumulation
-# over multi-thousand-row adjustment chains.
+# Largest plausible adj_close / close. The true bound is 1.0; see the module docstring for the margin.
 ADJ_CLOSE_MAX_RATIO = 1.1
 
-# Cap on how many individual rejected rows a single WARN line enumerates.
-# The count is always reported in full; only the per-row detail is capped.
+# A WARN line reports the full count but lists at most this many rows.
 MAX_REJECTS_LOGGED = 15
 
 
@@ -147,9 +73,8 @@ def guarded_px_sql(
     Mirrors COALESCE(adj_close, close) - the canonical adjusted basis for
     the price-level factors (#122) - except that an implausible adj_close
     falls back to the same row's split-adjusted close rather than
-    poisoning the series (or, as before the substitution change, being nulled and
-    biasing every MAX over the series LOW). See the module docstring's
-    SEMANTICS section.
+    poisoning the series. See the module docstring for why it substitutes
+    rather than nulls.
 
     The output is NULL only where COALESCE(adj_close, close) would itself
     be NULL: a rejected row always has close > 0 by construction of the
@@ -166,8 +91,7 @@ def is_rejected(adj_close, close, ratio: float = ADJ_CLOSE_MAX_RATIO):
     """Pandas/numpy mirror of `NOT guard_sql(...)`.
 
     Returns a boolean array: True where the row's adj_close is implausible.
-    Kept in lockstep with the SQL predicate by tests/test_adj_close_guard.py,
-    which evaluates both over the same fixture.
+    Kept in lockstep with the SQL predicate.
     """
     import numpy as np
     import pandas as pd
@@ -186,8 +110,7 @@ def guarded_px(adj_close, close, ratio: float = ADJ_CLOSE_MAX_RATIO):
 
     Returns a float array: COALESCE(adj_close, close) where the row is
     plausible, the row's own `close` where it is not. Kept in lockstep
-    with the SQL expression by tests/test_adj_close_guard.py, which
-    evaluates both over the same fixture.
+    with the SQL expression.
     """
     import numpy as np
     import pandas as pd
@@ -198,12 +121,9 @@ def guarded_px(adj_close, close, ratio: float = ADJ_CLOSE_MAX_RATIO):
     return np.where(is_rejected(adj, cl, ratio), cl, coalesced)
 
 
-# ---------------------------------------------------------------------------
-# WARN logging
-# ---------------------------------------------------------------------------
-# Requirement: upstream corruption must stay VISIBLE. Both loggers below emit
-# a single WARN per (caller, score_date) carrying the row count, the affected
-# ticker count, and a bounded sample of (ticker, date, value) triples.
+# Both loggers below emit a single WARN per (caller, score_date) carrying the
+# row count, the affected ticker count, and a bounded sample of
+# (ticker, date, value) triples, so upstream corruption shows up in the logs.
 
 
 def log_rejected_aggregate(

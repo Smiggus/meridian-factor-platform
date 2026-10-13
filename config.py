@@ -23,9 +23,7 @@ def _require_env(key: str) -> str:
     return val
 
 
-# ─────────────────────────────────────────────
 # Domain-grouped config dataclasses
-# ─────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
@@ -59,18 +57,12 @@ class _DataConfig:
     )
 
 
-# ─────────────────────────────────────────────
 # Instantiate domain configs
-# ─────────────────────────────────────────────
-
 api = _APIConfig()
 data = _DataConfig()
 
 
-# ─────────────────────────────────────────────
 # Backward-compatible module-level aliases
-# ─────────────────────────────────────────────
-
 # API Auth
 JWT_SECRET: str = api.jwt_secret
 JWT_ALGORITHM: str = api.jwt_algorithm

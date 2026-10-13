@@ -78,11 +78,6 @@ def _data_age_days(score_date: date_type) -> Optional[int]:
     return delta if delta > _STALENESS_THRESHOLD_DAYS else None
 
 
-# ─────────────────────────────────────────────
-# GET /universe
-# ─────────────────────────────────────────────
-
-
 @router.get("")
 def list_universe(
     date: Optional[str] = Query(
@@ -134,11 +129,6 @@ def list_universe(
     if age is not None:
         resp["data_age_days"] = age
     return resp
-
-
-# ─────────────────────────────────────────────
-# GET /universe/scores
-# ─────────────────────────────────────────────
 
 
 @router.get("/scores")

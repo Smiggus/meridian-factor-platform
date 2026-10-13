@@ -21,7 +21,7 @@ def pytest_configure(config):
     # test touching a notifying path pages the operator's real phone and
     # tracks CI activity rather than production health.
     #
-    # Belt AND braces: notify.send_ntfy also refuses outright under pytest.
+    # Second guard: notify.send_ntfy also refuses outright under pytest.
     # This override is the one that keeps the URL wrong even if that guard is
     # ever removed; the guard is the one that still holds for a test run
     # outside this conftest. Neither alone is sufficient.

@@ -1,4 +1,4 @@
-"""Exercise the physical overwrite boundary with a deliberately broken date."""
+"""Exercise the physical overwrite boundary with a broken date."""
 
 import sys
 from datetime import date, datetime, timezone

@@ -1,14 +1,9 @@
-"""
-api/routers/scores.py
+"""GET /scores: read-only lookup of one ticker's factor scores.
 
-GET /scores - read-only single-ticker factor score lookup.
-
-This router is a pure read-through over factors.daily_scores written by the
-Dagster code-server. There is no live FMP / FRED / NLP model fallback - that
-path was retired (issue #77). If the DB does not have a row for the
-requested (symbol, date), the API returns 404 and the caller is expected to
-wait for the pipeline to backfill that partition rather than have the API
-spin up FMP calls.
+This router reads `factors.daily_scores`, which the Dagster code server writes. There is no live
+FMP, FRED or NLP model fallback; that path was retired (issue #77). If the database has no row
+for the requested (symbol, date) the API returns 404, and the caller waits for the pipeline to
+backfill that partition.
 """
 
 from __future__ import annotations
@@ -33,11 +28,6 @@ _FACTOR_TO_GROUP: dict[str, str] = {
 }
 
 
-# ─────────────────────────────────────────────
-# GET /scores
-# ─────────────────────────────────────────────
-
-
 @router.get("")
 def get_scores(
     symbol: str = Query(..., description="Ticker symbol, e.g. AAPL"),
@@ -49,12 +39,7 @@ def get_scores(
         ),
     ),
 ) -> dict:
-    """
-    Returns factor scores for a single symbol on the given date.
-
-    Reads `factors.daily_scores` (written by the Dagster code-server) directly.
-    Returns 404 if the row is not present for (symbol, date).
-    """
+    """Factor scores for one symbol on one date, or 404 if the row is not there."""
     from factor_store import get_stock_factors
 
     symbol = symbol.upper().strip()
@@ -72,13 +57,7 @@ def get_scores(
 
 
 def _build_response_from_record(symbol: str, date: str, rec: dict) -> dict:
-    """
-    Build the API response shape from a factor_store.get_stock_factors() record.
-
-    The record already contains every field the response needs
-    (factors / group_scores / composite_score / quintile) in matching shape,
-    so this is a thin wrapper.
-    """
+    """Shape a factor_store.get_stock_factors() record into the response."""
     factors = {
         name: {
             "raw": _safe_float(detail.get("raw")),
@@ -112,7 +91,7 @@ def _build_response_from_record(symbol: str, date: str, rec: dict) -> dict:
         "quintile": rec.get("quintile"),
         # #329: count of non-null groups in the composite input pivot, INCLUDING
         # unweighted diagnostic groups (see n_weighted_groups below). Additive;
-        # the the downstream execution consumer floor is calibrated on this value, so its meaning is fixed.
+        # a downstream consumer's floor is calibrated on this value, so its meaning is fixed.
         "n_groups": rec.get("n_groups"),
         # RANK-003: n_groups counts every non-null group in the composite input
         # (including unweighted diagnostic groups); n_weighted_groups counts only
@@ -124,8 +103,7 @@ def _build_response_from_record(symbol: str, date: str, rec: dict) -> dict:
         # NULL means an older score has no captured explanation.
         "weights_used": provenance.get("weights"),
         "composite_group_scores": provenance.get("group_scores"),
-        # frozen contract key; the regime factors are not published, so it is
-        # always empty in this export
+        # Part of the frozen response contract. Always empty in this export.
         "regime_factors": {},
     }
 

@@ -10,7 +10,7 @@ Used by the Meridian API to serve point-in-time factor scores for:
 Also provides the submit_request() function to trigger Dagster
 materialization for missing dates (API-driven on-demand scoring).
 
-Connection to marketdata database (db-host @ db.internal:5432).
+Connects to the marketdata database (PGHOST, port 5432).
 """
 
 from __future__ import annotations
@@ -51,7 +51,7 @@ def _iceberg_first(pg_read: Callable[[], pd.DataFrame], iceberg_read: Callable[[
 
     Gated by lakehouse.iceberg_read_primary_api() / MERIDIAN_ICEBERG_API_READ -
     an env var STRUCTURALLY SEPARATE from MERIDIAN_ICEBERG_READ_PRIMARY (the
-    research-substrate switch parquet_io.py reads). This is deliberate: doc 18
+    research-substrate switch parquet_io.py reads). This is on purpose: doc 18
     ("Superseded decisions") records that routing the serving API through
     Iceberg was explored and REJECTED (point-lookup regression vs PG; no
     OIDC path for downstream tenants). Do not set MERIDIAN_ICEBERG_API_READ in
@@ -100,10 +100,7 @@ def _engine():
     )
 
 
-# ─────────────────────────────────────────────
 # Single stock factor lookup
-# ─────────────────────────────────────────────
-
 
 _ngroups_present: "bool | None" = None
 
@@ -295,11 +292,6 @@ def get_universe_scores(score_date: date) -> Optional[list[dict]]:
     return sorted(records.values(), key=lambda x: x.get("composite_score") or 0, reverse=True)
 
 
-# ─────────────────────────────────────────────
-# Date availability
-# ─────────────────────────────────────────────
-
-
 def get_scoreable_universe(
     as_of: Optional[date] = None,
     excluded_sectors: Optional[list[str]] = None,
@@ -472,9 +464,7 @@ def get_available_dates(limit: int = 30) -> list[date]:
     return df["score_date"].tolist()
 
 
-# ─────────────────────────────────────────────
 # On-demand compute request (triggers Dagster)
-# ─────────────────────────────────────────────
 
 
 def submit_compute_request(score_date: date) -> bool:
@@ -508,11 +498,6 @@ def get_request_status(score_date: date) -> Optional[str]:
             {"d": score_date},
         ).fetchone()
     return row[0] if row else None
-
-
-# ─────────────────────────────────────────────
-# Helpers
-# ─────────────────────────────────────────────
 
 
 def _safe(val) -> Optional[float]:

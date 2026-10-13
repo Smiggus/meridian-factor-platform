@@ -1,7 +1,7 @@
 """
 LDP OHLCV read-boundary contract check (Meridian #295, design doc D1).
 
-This is the ONE deliberately BLOCKING detective control in the repo. Every
+This is the ONE BLOCKING detective control in the repo. Every
 other check here is advisory by invariant ("a data-quality WARN must never
 halt daily scoring and starve every downstream consumer"). The read boundary
 is the documented exception, for one reason: a violation here means the
@@ -17,7 +17,7 @@ and reports. Statistics are gathered from the PARQUET/ICEBERG mirror when the
 assets are reading it, and from PostgreSQL otherwise, so the contract is
 evaluated on whichever path actually served the day's factors.
 
-WHAT BLOCKS AND WHAT ALERTS (deliberate, see parquet_io for the numbers)
+WHAT BLOCKS AND WHAT ALERTS (see parquet_io for the numbers)
   BLOCKING - required columns missing (this replaces a SILENT degrade in
              _ohlcv_columns()), zero bars, ret_1d non-null share below 90%,
              and adj_close above 1.1x close on the sources that carry no
@@ -157,7 +157,7 @@ def evaluate_contract_dates(stats_by_date: list[dict]) -> dict:
     adj_close residual, a bar-count step) are carried in `alerting` and are
     notified by the caller: this check is blocking=True, so making an
     alerting-only finding `passed=False` would risk halting the run on a leg
-    that is deliberately non-halting. Visibility for those comes from ntfy,
+    that is non-halting. Visibility for those comes from ntfy,
     not from the run's exit status - the repo's standing rule.
     """
     blocking: list[dict] = []

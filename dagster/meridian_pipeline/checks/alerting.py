@@ -1,34 +1,24 @@
-"""
-Alerting wrapper for STANDALONE asset checks (Meridian #295, design doc D3).
+"""Alerting wrapper for standalone asset checks (Meridian #295).
 
-`notify.py` shipped on 2026-08-01 with exactly two callers: the run-failure
-sensor, and the aggregator for the checks inlined onto `composite_scores`.
-Every standalone `@asset_check` pod - factor coverage, the trading-day
-invariant, the market_vol checks and the rest - was still unreachable by any
-alert. Detection could fire, but the last hop was missing.
+notify.py started with two callers: the run-failure sensor and the aggregator for the checks
+inlined onto `composite_scores`. Every standalone `@asset_check` pod (factor coverage, the
+trading-day invariant, the market_vol checks and the rest) could detect a problem and then tell
+nobody.
 
-TWO OUTCOMES, NOT ONE
-    A check that has been RAISING for a month is indistinguishable, in every
-    surface we have, from a check that has been FAILING for a month - and both
-    are indistinguishable from noise if only one alert shape exists. Every
-    wrapped check therefore reports one of three outcomes, stamped into the
-    result metadata as `outcome`:
+A wrapped check reports one of three outcomes, stamped into the result metadata as `outcome`:
 
-        passed  - evaluated, clean
-        failed  - evaluated, the data is bad          (ntfy, priority high)
-        errored - could NOT be evaluated: the check   (ntfy, priority high,
-                  itself raised                        distinct title + tag)
+    passed  - evaluated, clean
+    failed  - evaluated, the data is bad          (ntfy, priority high)
+    errored - could not be evaluated: the check   (ntfy, priority high,
+              itself raised                        distinct title and tag)
 
-    `errored` is deliberately louder-looking than `failed` in the message
-    body, because a broken detector is worse than a bad day: it silently
-    removes coverage.
+A check that has raised for a month looks the same as one that has failed for a month, so an
+`errored` check gets its own alert, title and tag.
 
-WHAT IT MUST NEVER DO
-    Fail the run. `swallow_errors=True` (the default) converts an exception
-    into a WARN result, matching `data_quality_checks._warn_on_error`. Pass
-    `swallow_errors=False` for BLOCKING checks, where an exception must
-    propagate and fail the step - there, the run-failure sensor is the
-    alerting path and silence would be a false green.
+The wrapper must not fail the run. With `swallow_errors=True`, the default, an exception becomes
+a WARN result, as in `data_quality_checks._warn_on_error`. Blocking checks pass
+`swallow_errors=False`: the exception propagates and fails the step, the run-failure sensor does
+the alerting, and swallowing the error there would give a false green.
 """
 
 from __future__ import annotations

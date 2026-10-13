@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-pipes_dask_driver.py - the MUSCLE plane of the elastic burst-compute pattern.
+pipes_dask_driver.py - the Dask driver for the elastic burst-compute pattern.
 
 Runs on a burst box (a dev machine, or an EC2 spot node). Fans a partition
 range across a local Dask cluster, computes each partition with a pluggable
 kernel, stages results to MinIO, reports progress home to a parked Dagster
 asset through Dagster Pipes, and hole-checks the batch. It NEVER writes gold.
 
-Design: docs/proposals/07-elastic-burst-compute-pipes.md.
+Design write-up: docs/proposals/07-elastic-burst-compute-pipes.md in the private repo.
 
 Standalone vs orchestrated
 --------------------------

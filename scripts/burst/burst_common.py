@@ -1,9 +1,9 @@
 """
 burst_common.py - shared building blocks for the elastic burst-compute pattern.
 
-Design: docs/proposals/07-elastic-burst-compute-pipes.md.
+Design write-up: docs/proposals/07-elastic-burst-compute-pipes.md in the private repo.
 
-This module is deliberately dependency-light (psycopg2 + pandas + boto3 +
+This module is dependency-light (psycopg2 + pandas + boto3 +
 pyarrow) so it runs unchanged on any burst box (a dev machine, an EC2
 spot node) as well as inside a cluster run pod. It owns four concerns that are
 identical across every backend and every kernel:
@@ -52,9 +52,7 @@ try:
 except ImportError:
     from scripts.burst.ingest_window import refuse_if_ingest_window_open
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Ingest-completion watermark preflight (supersedes the clock-window guard)
-# ─────────────────────────────────────────────────────────────────────────────
 #
 # LDP's completion watermark (`ohlcv.ingest_watermark`, live 2026-08-15)
 # answers "is date D's ingest actually done" directly from LDP's own
@@ -86,7 +84,7 @@ _INGEST_WATERMARK_QUERY = """
 """
 
 # Same override switch as ingest_window.py's _LDP_INGEST_WINDOW_FORCE_ENV -
-# deliberately the SAME env var (not re-imported, since ingest_window.py's
+# the SAME env var (not re-imported, since ingest_window.py's
 # module docstring says its internals stay private and untested-through-here;
 # duplicating one string literal is cheaper than coupling the two modules).
 # An operator setting this means "I have verified it is safe to launch right
@@ -170,10 +168,6 @@ def _refuse_if_unsafe_to_start(
     if not watermark_used:
         refuse_if_ingest_window_open(force=force)
 
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Config
-# ─────────────────────────────────────────────────────────────────────────────
 
 GOLD_DB_DEFAULT = "marketdata"
 GOLD_TABLE = "factors.daily_scores"
@@ -283,11 +277,6 @@ class BurstConfig:
         )
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Partition discovery
-# ─────────────────────────────────────────────────────────────────────────────
-
-
 _TRADING_CAL_CTE = (
     "WITH trading_cal AS ("
     "  SELECT ts_event::date AS d"
@@ -346,9 +335,7 @@ def discover_partitions(cfg: BurstConfig, start: str, end: str, source: str = "g
         return [r[0].isoformat() for r in cur.fetchall()]
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Kernels (pluggable). PoC ships `verify`; swap the body for real scoring.
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 def _fingerprint_frame(df: pd.DataFrame) -> dict:
@@ -416,7 +403,7 @@ def kernel_verify(cfg: BurstConfig, score_date: str) -> dict:
 
 
 def kernel_gpu_smoke(cfg: BurstConfig, score_date: str) -> dict:
-    """GPU-plane validator - the `verify` of the GPU muscle plane.
+    """GPU validator, the counterpart of `verify` for the GPU path.
 
     Exercises a real CUDA workload (a float64 matmul on the burst box's GPU)
     so the GPU device path is proven end to end -
@@ -593,9 +580,7 @@ def gpu_teardown() -> None:
         pass
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Staging IO (MinIO): per-partition parquet + sentinel, with resume.
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 def _partition_key(cfg: BurstConfig, score_date: str) -> str:
@@ -673,9 +658,7 @@ def load_staged_scores(cfg: BurstConfig, s3) -> pd.DataFrame:
     return pd.concat(rows, ignore_index=True)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
 # Hole-check + parity (the promotion gates)
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 @dataclass

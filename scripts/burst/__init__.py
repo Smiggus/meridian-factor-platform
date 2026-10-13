@@ -1,4 +1,4 @@
 """Burst compute PoC: elastic CPU offload via Dagster Pipes + Dask.
 
-See docs/proposals/07-elastic-burst-compute-pipes.md for the design.
+The design write-up is docs/proposals/07-elastic-burst-compute-pipes.md in the private repo.
 """

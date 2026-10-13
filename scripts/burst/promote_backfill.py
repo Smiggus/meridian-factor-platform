@@ -1,78 +1,56 @@
 #!/usr/bin/env python3
-"""
-promote_backfill.py - land a burst backfill's staged scores into gold.
+"""Land a burst backfill's staged scores into gold.
 
-The CONTROL-plane promote step of the elastic burst pattern (proposal 07): reads
-the per-partition score parquet a burst `backfill_core` run staged to MinIO and
-delete-replaces it into PostgreSQL `factors.daily_scores`, scoped to the kernel's
-owned factors so nothing else in gold is touched.
+This is the cluster-side step of the burst pattern (proposal 07). A `backfill_core` run on the
+burst box stages per-partition score parquet in MinIO, and this script delete-replaces it into
+`factors.daily_scores`, scoped to the factors the kernel owns so nothing else in gold is
+touched. A promote that died part way can simply be launched again, since the delete-replace
+is idempotent.
 
-Safety, in order:
-  0. Scope binding (#294): the owned-factor (delete) scope comes from the run's
-     `manifest.json`, which the kernel derived from the groups it actually
-     scored. A `--owned-factors` that disagrees with the manifest is refused,
-     and the staged payload is checked against the scope both ways: no staged
-     factor outside it (would leave stale rows), and no owned factor the
-     campaign never reproduces on a date that HAS gold rows for it (would
-     silently erase a factor - the !474 near-miss class). Runs staged before
-     manifests existed keep the legacy behaviour behind a loud warning.
-  0b. Hole check (#294): the kernel records every date each invocation
-     undertook under `{run_root}/requested/`. Promote reconciles that union
-     against the staged parquet and refuses an incomplete campaign - a dead
-     fan-out worker used to leave a silent gap that promoted anyway.
-  0c. Live-only guard (#380): some factors are owned by a group but CANNOT be
-     reproduced for a historical date (an upstream source overwrites the fetch
-     timestamp, so the scorer omits the column) - the live-written gold rows
-     are the only PIT record. Any
-     live-only factor left in the resolved delete scope is a hard abort: name it
-     in --retain-gold (keep the rows) or in --allow-erasure (delete them on
-     purpose). NOT overridable by --force-coverage, and `--allow-erasure all`
-     does not cover it - a blanket permit must not reach an irreversible one.
-  1. Coverage gate (default): the staged re-score must not LOSE coverage vs the
-     gold it replaces (a re-backfill on fuller/corrected data should keep or grow
-     ticker coverage). Aborts on a coverage regression unless --force-coverage.
-  2. Delete-replace is scoped to (score_date, factor_name in owned_factors) via
-     db.copy_replace_daily_scores(owned_factors=...) (or db.upsert_daily_scores
-     under --row-upsert) - other factors/groups untouched, orphans cleared if a
-     day's universe shrank.
-  3. Post-promote verification: re-reads gold for a sample of promoted dates and
-     asserts it matches the staged rows exactly (max|dz|==0, 0 membership diff).
-     The sample ALWAYS includes the last promoted partition (#380): an evenly
-     spaced `keys[::len//n][:n]` stops at index (n-1)*floor(len/n) and left the
-     trailing ~len/n partitions - the newest, and the only ones a live-only
-     factor occupies - unverified.
+It checks before it writes. The delete scope comes from the run's `manifest.json`, which the
+kernel derives from the groups it actually scored, and an `--owned-factors` that disagrees with
+it is refused (#294). The staged payload has to fit that scope both ways. A staged factor
+outside the scope would leave stale rows, and an owned factor the campaign fails to reproduce
+on a date where gold has rows for it would erase the factor (the !474 near-miss). The kernel
+also records every date each invocation undertook under `{run_root}/requested/`. A run with
+dates missing from the staged parquet is refused, because a dead fan-out worker once left a
+silent gap that promoted anyway. Runs staged before manifests existed fall back to the old
+behaviour with a loud warning. The last gate compares the staged re-score with the gold it
+replaces and aborts if ticker coverage would shrink.
 
-Each gate has exactly ONE override and overrides do not bleed (#380): coverage
--> --force-coverage, holes -> --allow-incomplete, erasure -> --allow-erasure,
-scope violation -> none, live-only -> --retain-gold / an explicitly named
---allow-erasure. `--force` is a deprecated alias for --force-coverage and no
-longer silences the hole check or the erasure gate.
+Some factors belong to a group but cannot be reproduced for a historical date: an upstream
+source overwrites the fetch timestamp and the scorer omits the column. For those, the
+live-written gold rows are the only point-in-time record. A live-only factor in the delete
+scope aborts the run unless it is named in `--retain-gold` (keep the rows) or `--allow-erasure`
+(delete them on purpose) (#380).
 
-Idempotent + resumable: re-running re-promotes (delete-replace), so a mid-run
-death is safe to relaunch. Writes PG gold (the served store) via
-db.copy_replace_daily_scores() by default (bulk COPY; ~10-20x the row-oriented
-upsert on a multi-million-row promote) or db.upsert_daily_scores() under
---row-upsert. BOTH route through db._dual_write_daily_scores, so either way
-each partition is best-effort dual-written into the meridian Iceberg mirror
-when MERIDIAN_ICEBERG_DUAL_WRITE is enabled (default on) and lakehouse
-credentials are present. The write-path choice is a throughput knob only; it
-can never silently change whether the mirror is written (that would make the
-assert_dual_write_ready preflight below a lie).
+After the write, the script re-reads gold for a sample of dates and requires it to equal the
+staged rows, with max|dz| under 1e-9 and no membership difference. The sample always includes
+the last promoted partition. Evenly spaced picks of the form `keys[::len//n][:n]` stop short of
+the end and leave the newest partitions unverified, and those are the only ones a live-only
+factor occupies.
 
-Iceberg credentials: LAKEKEEPER_M2M_CLIENT_ID/SECRET live in the infra
-repo's .env, not this repo's .env - source it before running off-cluster,
-alongside this repo's own
-MERIDIAN_MINIO_ACCESS_KEY/SECRET_KEY. If those creds are absent, OR they are
-present but the catalog is unreachable (Meridian#299: the default
-MERIDIAN_LAKEHOUSE_ENDPOINT is an in-cluster DNS name that cannot resolve
-off-cluster, so credentials alone are not enough - also export
-MERIDIAN_LAKEHOUSE_ENDPOINT=https://lakehouse.example.com/catalog), this
-script FAILS LOUDLY before writing anything (see assert_dual_write_ready in
-meridian_pipeline.lakehouse, which preflights both credential presence AND
-catalog reachability) rather than silently skipping the mirror on every
-partition. Pass --no-iceberg (or set MERIDIAN_ICEBERG_OPTIONAL=1) to
-explicitly accept a PG-only run; the promoted range can then be mirrored
-afterward with scripts/load_daily_scores_iceberg.py --replace (see docs/17,
+Each gate has its own override. Coverage takes `--force-coverage`, holes `--allow-incomplete`,
+erasure `--allow-erasure`, and live-only factors `--retain-gold` or an explicit
+`--allow-erasure`. A scope violation has none. `--force` is a deprecated alias for
+`--force-coverage` and no longer silences the hole check or the erasure gate, and
+`--allow-erasure all` does not cover a live-only factor. `--help` has the details.
+
+By default the write is `db.copy_replace_daily_scores` (bulk COPY, 10-20x faster than the row
+upsert on a multi-million-row promote), or `db.upsert_daily_scores` under `--row-upsert`. Both
+go through `db._dual_write_daily_scores`, so each partition is also written, best effort, to the
+meridian Iceberg mirror when MERIDIAN_ICEBERG_DUAL_WRITE is on (the default) and lakehouse
+credentials are present. The choice affects throughput only.
+
+Iceberg credentials: LAKEKEEPER_M2M_CLIENT_ID/SECRET are in the infra repo's .env, not this
+repo's. Source that file when running off-cluster, along with this repo's
+MERIDIAN_MINIO_ACCESS_KEY/SECRET_KEY, and export
+MERIDIAN_LAKEHOUSE_ENDPOINT=https://lakehouse.example.com/catalog, because the default is an
+in-cluster DNS name that does not resolve elsewhere (Meridian#299). If the credentials are
+missing or the catalog is unreachable the script fails before writing anything (see
+assert_dual_write_ready in meridian_pipeline.lakehouse), rather than skipping the mirror on
+every partition. `--no-iceberg`, or MERIDIAN_ICEBERG_OPTIONAL=1, accepts a PG-only run. The
+range can be mirrored afterwards with scripts/load_daily_scores_iceberg.py --replace (docs/17,
 "Off-cluster batch dual-write").
 
     cd ~/Meridian && set -a && . .env && set +a
@@ -107,11 +85,9 @@ from meridian_pipeline.pg_identity import (  # noqa: E402
     adopt_default_application_name,
 )
 
-# Legacy default for pre-#294 runs with no manifest: score_partition's
-# fundamentals scope. DERIVED from the group
-# map rather than re-listed here - a second hand-maintained copy of an owned
-# set is the delete-scope hazard itself. Runs staged by the current kernel
-# carry a manifest and never reach this default.
+# Default scope for pre-#294 runs that have no manifest: score_partition's fundamentals scope.
+# It is derived from the group map because a second hand-kept copy of an owned set is the
+# delete-scope hazard itself. Runs from the current kernel carry a manifest and never use it.
 OWNED_FACTORS = owned_factors_for_groups(FUNDAMENTALS_GROUPS)
 
 
@@ -163,7 +139,7 @@ def load_requested(s3, bucket, run_id):
 def resolve_owned_factors(manifest, cli_owned, default_owned):
     """Decide the delete scope, and say where it came from.
 
-    Precedence is deliberately NOT "CLI wins": the manifest is what the kernel
+    Precedence is NOT "CLI wins": the manifest is what the kernel
     actually scored, and a hand-typed CLI list that disagrees with it is the
     exact shape of the !474 near-miss (a printed promote command carrying the
     fundamentals default against a value+momentum+risk payload would have wiped
@@ -229,7 +205,7 @@ def live_only_in_scope(owned_factors, allow_erasure_spec, live_only=LIVE_ONLY_DE
     `owned_factors` is the scope AFTER --retain-gold has carved its factors out,
     so a retained factor is by construction absent here. The only other sign-off
     is naming the factor EXPLICITLY in --allow-erasure. `--allow-erasure all` is
-    deliberately not enough: it is the blunt permit an operator reaches for to
+    not enough: it is the blunt permit an operator reaches for to
     clear a batch of reproducible erasures, and it must not silently authorise
     deleting the only PIT record of a served factor (#380).
     """
@@ -512,7 +488,7 @@ def main() -> int:
             f"           {','.join(owned_factors)}"
         )
 
-    # --- Live-only guard (#380) --------------------------------------------
+    # Live-only guard (#380)
     # Scope-level, so it fires before any listing, preflight or DB work, and it
     # does not depend on what the payload happens to hold: a live-only factor in
     # the delete scope is wrong even if this particular staged frame does carry
@@ -566,7 +542,7 @@ def main() -> int:
     )
     print(f"[promote] {len(keys)} staged partitions | owned_factors={len(owned_factors)}{rng}")
 
-    # --- Hole check: every date the run undertook must have been staged ---
+    # Hole check: every date the run undertook must have been staged
     requested = load_requested(s3, bucket, args.run_id)
     if requested:
         holes = reconcile_holes(requested, [_date_of(k) for k in keys], args.start, args.end)
@@ -590,7 +566,7 @@ def main() -> int:
             "be reconciled; verify the date coverage by hand."
         )
 
-    # --- Coverage gate: sample a few dates, compare staged vs current gold coverage ---
+    # Coverage gate: sample a few dates, compare staged vs current gold coverage
     sample = sample_keys(keys, 12)
     regressions = 0
     scope_violations = set()
@@ -643,7 +619,7 @@ def main() -> int:
         )
         return 2
 
-    # --- Payload vs scope, direction 1: staged factor outside the delete scope ---
+    # Payload vs scope, direction 1: staged factor outside the delete scope
     if scope_violations:
         print(
             f"[promote] ABORT: staged payload carries {len(scope_violations)} factor(s) the "
@@ -653,7 +629,7 @@ def main() -> int:
         )
         return 2
 
-    # --- Payload vs scope, direction 2: owned factor the campaign does not rewrite ---
+    # Payload vs scope, direction 2: owned factor the campaign does not rewrite
     # Two layers (#380). The 12-date sample above catches a per-date erasure on
     # the dates it happens to inspect. This second layer closes the FACTOR axis:
     # every owned factor the whole sample never witnessed is checked against gold
@@ -707,7 +683,7 @@ def main() -> int:
         print("[promote] dry-run: gates OK, nothing written.")
         return 0
 
-    # --- Promote: per-partition scoped delete-replace ---
+    # Promote: per-partition scoped delete-replace
     # Default to bulk COPY (A2: ~10-20x faster than the row-oriented upsert that
     # dominated the 2010-2013 promote at ~2.6h); --row-upsert falls back.
     write = db.upsert_daily_scores if args.row_upsert else db.copy_replace_daily_scores
@@ -715,9 +691,9 @@ def main() -> int:
 
     # Meridian#294: everything this promote writes belongs to ONE campaign, so
     # a future "which promote landed these rows / what did it read / did
-    # anything gate it" is a join instead of an archaeology exercise. The
-    # campaign is bound ambiently, so both write paths pick it up with no
-    # per-callsite change, and it closes with the verification verdict below.
+    # anything gate it" can be answered with a join. The campaign is bound
+    # ambiently, so both write paths pick it up with no per-callsite change,
+    # and it closes with the verification verdict below.
     staged_at = _staged_at_max(s3, bucket, f"burst/{args.run_id}/scores/", keys)
     input_vintage = lineage.source_vintage(
         f"burst/{args.run_id}/scores",
@@ -768,7 +744,7 @@ def main() -> int:
                     flush=True,
                 )
 
-        # --- Post-promote verification: gold == staged exactly for a sample ---
+        # Post-promote verification: gold == staged exactly for a sample
         import pandas as pd
 
         bad = 0
@@ -801,8 +777,8 @@ def main() -> int:
             )
             bad += 0 if ok else 1
 
-        # The gate verdict is the point of recording a campaign at all: it is
-        # what lets a row claim to be trustable rather than merely present.
+        # Record the verification result on the campaign: pass or fail, the
+        # sample size, the failure count, rows written and partitions promoted.
         lineage.set_gate_result(
             lineage.GATE_PASS if bad == 0 else lineage.GATE_FAIL,
             verify_sample=args.verify_sample,

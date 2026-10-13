@@ -1,33 +1,17 @@
-"""
-notify.py - one shared, fail-open ntfy transport for the meridian-factors
-code location.
+"""One ntfy transport for the meridian-factors code location.
 
-Before this module the only notification path in the repo was
-`sensors.ntfy_run_failure_sensor`, which fires exclusively on a run
-transitioning to FAILURE. Detective signals that deliberately do NOT fail
-the run - the nine Tier-1 checks inlined into `composite_scores` (#285),
-all of which are recorded via `_record` inside a broad `except` so they can
-never wedge daily scoring - therefore had no way to reach an operator at
-all. Without a notification path such a failure would go unseen.
+The only notification path used to be `sensors.ntfy_run_failure_sensor`, which fires when a run
+goes to FAILURE. Checks that don't fail the run, such as the nine Tier-1 checks inlined into
+`composite_scores` (#285), which record through `_record` inside a broad `except` so they can't
+wedge daily scoring, had no way to reach an operator. This module is the POST the sensor already
+made, moved out so other code can use it.
 
-This module is deliberately tiny: the POST that `ntfy_run_failure_sensor`
-already performed, lifted out so a non-failing code path can reuse it.
-Design invariants:
-
-  * FAIL-OPEN, always. Every transport error is swallowed and reported as a
-    False return value. A broken ntfy server must never fail an asset, wedge
-    the daemon, or turn an observability signal into an outage.
-  * STDLIB ONLY (urllib.request, not requests). The payload is one
-    fire-and-forget plain-HTTP POST to a LAN host - no session, no retries,
-    no proxy config, no TLS - so `requests` bought nothing here, and the
-    slim CI `test` image does not ship it: importing it at module level made
-    this module and its tests uncollectable on that job. An alerting path
-    with no CI coverage is precisely the failure mode this module exists to
-    fix, so it must be importable on EVERY image.
-  * No Dagster imports. Callable from sensors, assets, and unit tests alike.
-  * URL from MERIDIAN_NTFY_URL, read at CALL time (not import time) so a
-    test can monkeypatch the env and so the topic can move without a code
-    change or image rebuild.
+It is fail-open. Every transport error is swallowed and comes back as a False return value, so a
+dead ntfy server can't fail an asset or stall the daemon. It uses urllib and not requests: the
+payload is one plain-HTTP POST to a LAN host, and the slim CI test image has no requests, which
+used to make this module and its tests uncollectable there. It imports nothing from Dagster, so
+sensors, assets and unit tests can all call it. The URL comes from MERIDIAN_NTFY_URL, read at
+call time so a test can patch the environment and the topic can move without an image rebuild.
 """
 
 from __future__ import annotations
@@ -36,18 +20,14 @@ import os
 import urllib.error
 import urllib.request
 
-# Default targets the homelab ntfy "alerts" topic over the LAN
-# (server-to-server, no proxy/cert). Same default the run-failure sensor has
-# used since it shipped.
+# The LAN ntfy alerts topic, which is also the run-failure sensor default.
 DEFAULT_NTFY_URL = "http://gpu.internal/alerts"
 
-# Transport timeout, seconds. Short on purpose: a notification is never worth
-# stalling an asset or a sensor tick for.
+# Seconds. A notification isn't worth stalling a sensor tick.
 NTFY_TIMEOUT_SECONDS = 5
 
-# Checks whose failure is real but AMBIGUOUS on its own, so a notification
-# containing nothing else is sent at default rather than high priority.
-# Deliberately tiny and explicit - see notify_failed_checks.
+# Checks whose failure is real but ambiguous alone. A batch made up only of these goes out at
+# default priority; see notify_failed_checks.
 _CONTEXT_ONLY_CHECKS = frozenset({"check_dq_universe_drift"})
 
 
@@ -56,10 +36,7 @@ def ntfy_url() -> str:
     return os.environ.get("MERIDIAN_NTFY_URL", DEFAULT_NTFY_URL)
 
 
-# Explicit opt-in for the handful of tests whose SUBJECT is the transport
-# itself (tests/test_notify.py). Everything else stays denied by default.
-# An opt-in is the right shape here: a test that wants to exercise the POST
-# has to say so, and no test acquires that power by accident.
+# Set by the few tests whose subject is the transport itself (tests/test_notify.py).
 NTFY_TEST_TRANSPORT_ENV = "MERIDIAN_NTFY_ALLOW_TEST_TRANSPORT"
 
 
@@ -82,27 +59,20 @@ def send_ntfy(
     click: str = "",
     log=None,
 ) -> bool:
-    """POST one ntfy notification. Returns True on success, False if the
-    transport failed (never raises).
+    """POST one ntfy notification. Returns True on success, False if the transport failed.
+    It never raises.
 
-    `log` is an optional Dagster logger; when supplied, transport failures
-    are logged as warnings so the miss is at least visible in the run log.
+    `log` is an optional Dagster logger. When given, transport failures are logged as
+    warnings so the miss shows in the run log.
 
-    NO-OPS UNDER PYTEST. The endpoint is resolved from an env var with a
-    LIVE default, so any test that exercises a notifying code path posts to
-    the operator's real phone. That is not hypothetical: CI test runs flooded
-    the alert topic and drowned the few real alerts, including from a fixture
-    literally named `_always_raises` in tests/test_dq_checks.py. Volume tracked
-    CI activity, not production health.
-
-    The guard lives HERE, not only in conftest, on purpose. A conftest
-    override protects the tests that happen to run under that conftest; this
-    protects every caller, including a test invoked from another directory,
-    a doctest, or a future test file that forgets. Alerting is exactly the
-    subsystem where the fail-safe must not be opt-in.
+    Under pytest this does nothing and returns False. The endpoint comes from an env var
+    with a live default, and CI runs that reached a notifying code path posted to the
+    operator's phone until the alert topic was unreadable. One source was a fixture called
+    `_always_raises` in tests/test_dq_checks.py. The check lives here rather than in
+    conftest so that it also holds for a test run from another directory.
     """
     if _under_pytest():
-        # Deliberately silent. `log` is whatever the caller passed - Dagster
+        # Silent. `log` is whatever the caller passed - Dagster
         # loggers, the suite's own doubles - and a notifier that crashes its
         # caller on a logging API mismatch is worse than one that says nothing.
         return False
@@ -141,30 +111,23 @@ def notify_failed_checks(
     failures: list[dict],
     log=None,
 ) -> bool:
-    """Alert on non-blocking detective checks that FAILED.
+    """Alert on non-blocking detective checks that failed.
 
-    `failures` is a list of `{"name", "failed_partitions", "detail"}` dicts,
-    one per failing check (the shape `composite_scores` accumulates in its
-    `check_state`). No-ops (returns False) when the list is empty, so callers
-    can invoke it unconditionally.
+    `failures` is a list of `{"name", "failed_partitions", "detail"}` dicts, one per failing
+    check (the shape `composite_scores` accumulates in its `check_state`). It returns False
+    without sending when the list is empty, so callers can call it unconditionally.
 
-    Kept non-blocking on purpose. The repo's convention is that these checks
-    "must never fail the run" - a data-quality WARN is not a reason to halt
-    factor scoring and starve every downstream consumer of the day's scores.
-    What was missing was not enforcement but VISIBILITY, so the fix is a
-    notification, not a gate.
+    The checks stay non-blocking, since halting scoring over a data-quality WARN would hold
+    back the day's scores for every consumer. They only needed somebody to see the failure.
     """
     if not failures:
         return False
 
     lines = [f"{asset_name}: {len(failures)} detective check(s) FAILED", ""]
-    # Ambiguous-by-design signals do not page on their own (design doc D5).
-    # check_dq_universe_drift is a pure count delta: a large drop can have
-    # several unrelated causes, some of them CORRECT (for example a bulk
-    # ingest of delisted tickers). It is context for
-    # check_dq_liquid_unscored - the contradiction - not a standalone alarm.
-    # A notification consisting only of drift therefore goes out at default
-    # priority; anything else in the batch restores high.
+    # check_dq_universe_drift is a plain count delta. A large drop can have harmless causes,
+    # a bulk ingest of delisted tickers for one, so on its own it goes out at default
+    # priority. It is mainly context for check_dq_liquid_unscored. Anything else in the
+    # batch puts the priority back to high (design doc D5).
     only_context = all(f.get("name") in _CONTEXT_ONLY_CHECKS for f in failures)
     priority = "default" if only_context else "high"
     for f in failures:
@@ -194,15 +157,11 @@ def notify_errored_check(
     exc: BaseException,
     log=None,
 ) -> bool:
-    """Alert on a check that could NOT be evaluated because it RAISED.
+    """Alert on a check that could not be evaluated because it raised.
 
-    Deliberately a separate call, a separate title and a separate tag from
-    `notify_failed_checks`. Conflating the two is how a broken detector hides:
-    `_warn_on_error` returns `passed=False, severity=WARN` on an exception,
-    which renders identically to a genuine finding, so a check that has been
-    raising for a month looks exactly like a check that has been failing for a
-    month - and neither looks like what it actually is, which is coverage that
-    silently went away. See checks/alerting.py.
+    This has its own call, title and tag, separate from `notify_failed_checks`.
+    `_warn_on_error` returns `passed=False, severity=WARN` on an exception, which looks the
+    same as a real finding. See checks/alerting.py.
     """
     body = "\n".join(
         [
@@ -210,8 +169,8 @@ def notify_errored_check(
             "",
             f"{type(exc).__name__}: {exc}"[:400],
             "",
-            "This is NOT a data finding - it is missing coverage. The defect this",
-            "check watches for is currently unmonitored.",
+            "No data problem was found. The check itself broke, so what it watches for",
+            "is currently unchecked.",
         ]
     )
     return send_ntfy(

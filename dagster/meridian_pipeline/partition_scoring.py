@@ -1,22 +1,14 @@
-"""
-partition_scoring.py - SHOWCASE STUB.
+"""Scoring of one date's factor groups, without a Dagster context.
 
-In the private repository this module scores one date's factor groups without
-a Dagster context, so the burst box and the in-cluster assets run the SAME
-compute. The factor bodies it composes are the research output of the program
-and are not published.
-
-What the stub keeps is the INTERFACE the burst ship-back and promote
-machinery depends on:
+This is a minimal placeholder. It keeps the names the burst ship-back and
+promote code depends on, so `scripts/burst/promote_backfill.py` and its tests
+run the real scope logic against the example catalogue in `factor_definitions.py`:
 
     FUNDAMENTALS_GROUPS         the groups a core backfill owns (illustrative)
-    GROUP_FACTORS               group -> the factors it OWNS (delete-replace scope)
+    GROUP_FACTORS               group -> the factors it owns (delete-replace scope)
     LIVE_ONLY_DEFAULT           factors with no historical data, never erased
-    owned_factors_for_groups()  the ONLY sanctioned way to build a promote scope
-    score_partition()           the compute; raises here
-
-so `scripts/burst/promote_backfill.py` and its tests exercise the real scope
-logic against the example catalogue in `factor_definitions.py`.
+    owned_factors_for_groups()  the only supported way to build a promote scope
+    score_partition()           the compute; raises NotImplementedError here
 """
 
 from __future__ import annotations
@@ -50,8 +42,8 @@ def resolve_groups(groups) -> "tuple[str, ...]":
 
 def owned_factors_for_groups(groups) -> "list[str]":
     """The delete-replace scope implied by a group selection: the sorted union
-    of each selected group's owned factors. This is the ONLY sanctioned way to
-    build an owned_factors list for a burst promote."""
+    of each selected group's owned factors. Burst promotes build their
+    owned_factors list this way and no other."""
     out: set = set()
     for g in resolve_groups(groups):
         out.update(GROUP_FACTORS[g])
@@ -59,7 +51,5 @@ def owned_factors_for_groups(groups) -> "list[str]":
 
 
 def score_partition(engine, score_date, groups=None):
-    """Score one date. Not published: the factor constructions are withheld."""
-    raise NotImplementedError(
-        "score_partition is a showcase stub: the factor constructions are not published"
-    )
+    """Score one date. Not implemented in this copy."""
+    raise NotImplementedError("score_partition is not implemented in this copy")

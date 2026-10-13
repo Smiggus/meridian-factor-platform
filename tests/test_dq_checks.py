@@ -127,7 +127,7 @@ def test_zscore_drift_ok_passes_at_std_boundaries():
 # ---------------------------------------------------------------------------
 # pinned_at_floor_ok (added 2026-08-01)
 #
-# The gap this closes: a [-1, 1] range bound on example_level_a is passed by a
+# The gap this closes: a [-1, 1] range bound on drawdown_all is passed by a
 # value of -0.99999. These tests pin both the gap and the thresholds, on
 # synthetic cross-sections.
 # ---------------------------------------------------------------------------
@@ -136,45 +136,44 @@ def test_zscore_drift_ok_passes_at_std_boundaries():
 def test_pinned_value_passes_split_bias_but_not_pinned_check():
     """The regression that motivated this check: -0.99999 is INSIDE the
     split-bias range, so only the share-based check can see it."""
-    assert split_bias_ok("example_level_a", -0.99999)[0] is True
+    assert split_bias_ok("drawdown_all", -0.99999)[0] is True
     # 5% of the (synthetic) cross-section pinned there.
-    ok, msg = pinned_at_floor_ok("example_level_a", 100, 2000)
+    ok, msg = pinned_at_floor_ok("drawdown_all", 100, 2000)
     assert ok is False
-    assert "example_level_a" in msg
+    assert "drawdown_all" in msg
 
 
 def test_pinned_at_floor_ok_healthy_share_passes():
     # Synthetic healthy share: 5/2000 = 0.25%, well under the threshold.
-    ok, msg = pinned_at_floor_ok("example_level_a", 5, 2000)
+    ok, msg = pinned_at_floor_ok("drawdown_all", 5, 2000)
     assert ok is True
     assert msg == ""
 
 
 def test_pinned_at_floor_ok_broken_share_fails():
     # Synthetic broken state: 100/2000 = 5.00%.
-    ok, msg = pinned_at_floor_ok("example_level_a", 100, 2000)
+    ok, msg = pinned_at_floor_ok("drawdown_all", 100, 2000)
     assert ok is False
     assert "5.00%" in msg
 
 
 def test_pinned_at_floor_ok_modest_broken_share_fails():
-    # A modest corrupted share must still trip the threshold, not just the
+    # A modest corrupted share must still trip the threshold, the same as the
     # worst day.
-    ok, _ = pinned_at_floor_ok("example_level_a", 353, 10_000)
+    ok, _ = pinned_at_floor_ok("drawdown_all", 353, 10_000)
     assert ok is False
 
 
 def test_pinned_at_floor_ok_covid_crash_rate_passes():
-    # [redacted: internal research note]
     # A tiny pinned share must not trip the check.
-    ok, _ = pinned_at_floor_ok("example_level_b", 1, 3000)
+    ok, _ = pinned_at_floor_ok("drawdown_52w", 1, 3000)
     assert ok is True
 
 
 def test_pinned_at_floor_ok_at_threshold_passes():
     # Strictly-greater comparison: exactly at the threshold is not a failure.
-    pct = _PINNED_FLOOR_MAX_PCT["example_level_a"]
-    ok, _ = pinned_at_floor_ok("example_level_a", int(pct * 100), 10_000)
+    pct = _PINNED_FLOOR_MAX_PCT["drawdown_all"]
+    ok, _ = pinned_at_floor_ok("drawdown_all", int(pct * 100), 10_000)
     assert ok is True
 
 
@@ -185,7 +184,7 @@ def test_pinned_at_floor_ok_unknown_factor_passes():
 
 
 def test_pinned_at_floor_ok_empty_cross_section_passes():
-    assert pinned_at_floor_ok("example_level_a", 0, 0)[0] is True
+    assert pinned_at_floor_ok("drawdown_all", 0, 0)[0] is True
 
 
 def test_pinned_floor_value_is_inside_split_bias_range():
@@ -214,39 +213,39 @@ def test_split_bias_no_longer_covers_the_ath_factors():
     """
     from meridian_pipeline.checks.data_quality_checks import _SPLIT_BIAS_BOUNDS
 
-    assert "example_level_a" not in _SPLIT_BIAS_BOUNDS
-    assert "example_level_b" not in _SPLIT_BIAS_BOUNDS
+    assert "drawdown_all" not in _SPLIT_BIAS_BOUNDS
+    assert "drawdown_52w" not in _SPLIT_BIAS_BOUNDS
     # Unknown factors pass by design, so the corrupted value now passes here
     # and is caught by pinned_at_floor_ok instead.
-    assert split_bias_ok("example_level_a", -0.99999)[0] is True
+    assert split_bias_ok("drawdown_all", -0.99999)[0] is True
 
 
-def test_split_bias_ok_example_ratio_a_in_range():
-    ok, msg = split_bias_ok("example_ratio_a", 1.5)
+def test_split_bias_ok_vol_surge_in_range():
+    ok, msg = split_bias_ok("vol_surge", 1.5)
     assert ok is True
 
 
-def test_split_bias_ok_example_ratio_a_at_upper_bound():
+def test_split_bias_ok_vol_surge_at_upper_bound():
     # Bound is 75.0; 20.0 is well within range.
-    ok, msg = split_bias_ok("example_ratio_a", 20.0)
+    ok, msg = split_bias_ok("vol_surge", 20.0)
     assert ok is True
 
 
-def test_split_bias_ok_example_ratio_a_normal_spike():
+def test_split_bias_ok_vol_surge_normal_spike():
     # A genuine volume spike of 50x is within the sanity bound.
-    ok, msg = split_bias_ok("example_ratio_a", 50.0)
+    ok, msg = split_bias_ok("vol_surge", 50.0)
     assert ok is True
 
 
-def test_split_bias_ok_example_ratio_a_above_bound():
+def test_split_bias_ok_vol_surge_above_bound():
     # Values above 75.0 indicate a pathological split-bias regression.
-    ok, msg = split_bias_ok("example_ratio_a", 150.0)
+    ok, msg = split_bias_ok("vol_surge", 150.0)
     assert ok is False
-    assert "example_ratio_a" in msg
+    assert "vol_surge" in msg
 
 
-def test_split_bias_ok_example_ratio_a_negative():
-    ok, msg = split_bias_ok("example_ratio_a", -1.0)
+def test_split_bias_ok_vol_surge_negative():
+    ok, msg = split_bias_ok("vol_surge", -1.0)
     assert ok is False
 
 

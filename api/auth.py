@@ -37,21 +37,15 @@ def create_token(subject: str = "local", scope: str | None = None) -> str:
 def verify_token(
     credentials=Depends(_bearer),
 ) -> dict:
-    """
-    FastAPI dependency. Verifies the Bearer token and returns the decoded payload.
-    Raises HTTP 401 on any failure.
-    """
+    """Verify the Bearer token and return its payload. Raises 401 on any failure."""
     exc = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Invalid or expired token",
         headers={"WWW-Authenticate": "Bearer"},
     )
     try:
-        # HTTPBearer returns HTTPAuthorizationCredentials with .credentials attr,
-        # but type annotation can cause issues on some FastAPI/Python versions
-        token = credentials.credentials if hasattr(credentials, "credentials") else str(credentials)
         payload = jwt.decode(
-            token,
+            credentials.credentials,
             config.JWT_SECRET,
             algorithms=[config.JWT_ALGORITHM],
         )
@@ -62,10 +56,7 @@ def verify_token(
         raise exc
 
 
-# ─────────────────────────────────────────────
 # Admin authorization (API-004)
-# ─────────────────────────────────────────────
-
 ADMIN_SCOPE = "admin"
 ADMIN_SUBJECTS_ENV = "MERIDIAN_ADMIN_SUBJECTS"
 
@@ -82,11 +73,8 @@ def _admin_subjects() -> frozenset[str]:
 def _has_admin_claim(payload) -> bool:
     """True when the JWT carries an admin scope or role.
 
-    Accepted shapes: `scope` as a space-separated string (OAuth style) or a
-    list, `scopes` / `roles` as lists, `role` as a string or list. Only
-    `scope` is split on whitespace; `role` / `roles` / `scopes` entries are
-    compared whole and exactly against "admin", so a role such as
-    "site admin" or "not admin" grants nothing.
+    Reads `scope` (a space-separated string or a list), `scopes`, `role` and `roles`. Only
+    `scope` is split on whitespace. The other claims are compared whole against "admin".
     """
     if not isinstance(payload, dict):
         return False

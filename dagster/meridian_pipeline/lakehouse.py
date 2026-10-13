@@ -38,13 +38,12 @@ from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
 
-# ── Catalog + warehouse ───────────────────────────────────────────────────────
 # Endpoint defaults to the in-cluster REST catalog; bare boxes override to
 # https://lakehouse.example.com/catalog (they cannot resolve cluster DNS).
 #
 # Meridian#299 considered changing this default (either to the external URL,
 # resolvable from both sides, or to no default at all so a missing config is a
-# loud error). Both were rejected, deliberately:
+# loud error). Both were rejected:
 #   * external default: k8s_config.py documents that in-cluster step pods carry
 #     NO explicit MERIDIAN_LAKEHOUSE_ENDPOINT override today - "endpoints
 #     default to the correct in-cluster URLs ... so no extra env is needed".
@@ -60,7 +59,7 @@ logger = logging.getLogger(__name__)
 #     in-cluster dual-write on the next deploy.
 # So the default stays in-cluster, unchanged, and the loud-failure requirement
 # is met a different way: assert_dual_write_ready() (below) now preflights
-# actual catalog REACHABILITY, not just credential presence, so an off-cluster
+# actual catalog REACHABILITY as well as credential presence, so an off-cluster
 # run with the wrong (in-cluster) endpoint dies at job start with a clear
 # "set MERIDIAN_LAKEHOUSE_ENDPOINT" error instead of silently skipping every
 # partition's mirror write for hours (the Meridian#299 incident).
@@ -70,7 +69,7 @@ MERIDIAN_LAKEHOUSE_ENDPOINT: str = os.environ.get(
 )
 MERIDIAN_WAREHOUSE: str = os.environ.get("MERIDIAN_WAREHOUSE", "meridian")
 
-# ── OIDC (catalog bearer) ─────────────────────────────────────────────────────
+# OIDC (catalog bearer)
 # Shared lakekeeper-m2m client (same one LDP + Trino use); k8s secret
 # dagster-secrets. scope=openid is required - an empty scope yields an opaque
 # token Lakekeeper's JWKS validation rejects.
@@ -81,7 +80,7 @@ LAKEKEEPER_OAUTH2_SERVER_URI: str = os.environ.get(
 )
 LAKEKEEPER_OAUTH2_SCOPE: str = os.environ.get("LAKEKEEPER_OAUTH2_SCOPE", "openid")
 
-# ── S3 data I/O (MinIO) ───────────────────────────────────────────────────────
+# S3 data I/O (MinIO)
 # Reuses the MERIDIAN_MINIO_* keys parquet_io already defines. The warehouse was
 # registered with region "local"; s3.endpoint needs a scheme so we build it from
 # the host + USE_SSL flag.
@@ -388,7 +387,7 @@ def assert_dual_write_ready(context: str) -> None:
     Distinguishes three states:
       1. dual-write disabled (MERIDIAN_ICEBERG_DUAL_WRITE=false, e.g.
          --no-iceberg) -> not configured at all; this is a legitimate,
-         deliberate PG-only run. Returns immediately, no network call.
+         intended PG-only run. Returns immediately, no network call.
       2. dual-write enabled, credentials present, catalog reachable -> the
          intended path. Returns after one successful probe.
       3. dual-write enabled but credentials are absent, OR credentials are
@@ -396,7 +395,7 @@ def assert_dual_write_ready(context: str) -> None:
          to dual-write and unable to. Raises RuntimeError (once, before any
          writes happen) so the run fails in seconds, not after hours of
          half-mirrored work. Set MERIDIAN_ICEBERG_OPTIONAL=1 to downgrade
-         either failure mode to a single warning log line for a deliberate
+         either failure mode to a single warning log line for a planned
          PG-only run (the caller is then responsible for mirroring the range
          afterward, e.g. via scripts/load_daily_scores_iceberg.py).
     """
@@ -468,7 +467,7 @@ def iceberg_read_primary() -> bool:
 def iceberg_read_primary_api() -> bool:
     """Gate for factor_store.py's (API) Iceberg-first/Postgres-fallback shim.
 
-    Deliberately a SEPARATE env var from MERIDIAN_ICEBERG_READ_PRIMARY (which
+    A SEPARATE env var from MERIDIAN_ICEBERG_READ_PRIMARY (which
     only controls Meridian's own research reads in parquet_io.py) so that
     enabling the research substrate can never, even by accident, route the
     serving API to Iceberg. Default OFF.
@@ -1032,12 +1031,12 @@ def daily_scores_max_date(floor_date) -> date | None:
 # authoritative, point-lookup-fast serving gold - see
 # docs/18-ICEBERG_MIGRATION.md section 6, decision ACCEPTED 2026-07-17).
 #
-# This is DELIBERATELY a separate table from meridian.factors.daily_scores
+# This is a separate table from meridian.factors.daily_scores
 # (the best-effort mirror the daily pipeline dual-writes on every partition).
 # If the sensor watched the mirror it would fire a PG sync on every routine
 # daily-pipeline commit - a pointless round-trip that re-writes PG from a
 # mirror of PG. A dedicated promotion table means a snapshot appears ONLY when
-# a batch/recompute/research job deliberately writes finalized rows to promote,
+# a batch/recompute/research job writes finalized rows to promote,
 # so a snapshot-id change is an unambiguous "promote this" signal.
 #
 # Direction of truth is unchanged: PG is authoritative-once-written. Promotion

@@ -1,7 +1,6 @@
-# Lint, format and test. The private repository also builds both container
-# images (API and Dagster code location), cuts semantic-release versions and
-# notifies its dependency bot; those stages need a registry and a cluster and
-# are not part of the showcase.
+# Lint, format and test. Building the two container images (API and Dagster
+# code location) and cutting releases happen elsewhere, since they need a
+# registry and a cluster.
 name: ci
 
 on:

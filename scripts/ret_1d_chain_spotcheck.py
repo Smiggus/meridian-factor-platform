@@ -1,18 +1,16 @@
-"""
-ret_1d_chain_spotcheck.py
+"""Spot-check for chained ret_1d.
 
-Reusable spot-check: chaining ret_1d over a dividend-paying ETF for N
-trading days should equal (close ratio + dividend yield) within
-floating-point tolerance. If LESS, the consumer has the window-start
-off-by-one (per LDP DATABASE.md): it's including ret_1d[start] which
-measures the return INTO close[start] from close[start-1], instead of
-FROM close[start] onward.
+Chain ret_1d over a dividend-paying ticker for N trading days and the result should be the
+close ratio plus whatever dividends were paid in the window, to within floating-point
+tolerance. A chain that comes out lower than the close ratio has the window-start
+off-by-one described in the LDP DATABASE.md: it includes ret_1d[start], the return into
+close[start] from the previous close, where it should start from close[start] onward.
 
-Correct chain: `ts_event > start AND ts_event <= end`.
+The correct window is `ts_event > start AND ts_event <= end`.
 
-Each consumer that chains ret_1d (as opposed to just taking log1p of
-individual rows for vol/cov math) should import + call these helpers
-during tests / in a debug harness before trusting its output.
+A consumer that chains ret_1d, as opposed to taking log1p of single rows for vol and
+covariance, should call these helpers from its tests or a debug harness before trusting
+what it produces.
 """
 
 from __future__ import annotations
@@ -65,16 +63,13 @@ def chain_spotcheck(
     end_date: date,
     tol_abs: float = 0.0005,
 ) -> ChainSpotCheckResult:
-    """Verify ret_1d chain on a ticker matches close_ratio + dividend_yield.
+    """Check that the ret_1d chain on a ticker equals close_ratio plus dividends.
 
-    Passing = chained_ret >= close_ratio - tol_abs. (Must be at least as
-    large as close ratio; if less, the chain has the off-by-one bug.)
-
-    Further asserts chained_ret - close_ratio is within [0, +0.10] - any
-    larger positive implied dividend over 3 months is implausible for a
-    broad US equity ETF (absurd dividend yield or another bug).
+    Passes when chained_ret >= close_ratio - tol_abs, since the chain can only be lower
+    than the close ratio if it has the off-by-one. The implied dividend, chained_ret minus
+    close_ratio, must also stay under 0.10. Over a quarter that is far above any yield
+    among the tickers in SPOTCHECK_CASES, so a larger gap points at bad data or a bug.
     """
-    # Pull close + ret_1d for [start_date, end_date]
     df = pd.read_sql(
         text("""
             SELECT ts_event::date AS d, close, ret_1d
@@ -93,21 +88,19 @@ def chain_spotcheck(
     df["d"] = pd.to_datetime(df["d"])
     df = df.drop_duplicates("d").sort_values("d")
 
-    # Close ratio: use first and last rows in the window
     close_start = df.iloc[0]["close"]
     close_end = df.iloc[-1]["close"]
     close_ratio = float(close_end / close_start - 1.0)
 
-    # Chained ret: exclude the first row's ret_1d (which measured
-    # return INTO close_start, not from it), include all subsequent.
-    # Filter: ts_event > start_date (strict) AND ts_event <= end_date.
-    chain_df = df.iloc[1:]  # equivalent to ts_event > first row's date
+    # The first row's ret_1d is the return into close_start, so the chain
+    # starts at the second row (ts_event > start_date, strict).
+    chain_df = df.iloc[1:]
     chained = float((1.0 + chain_df["ret_1d"]).prod() - 1.0)
 
     implied_div = chained - close_ratio
 
-    # Passes if chain at least matches close ratio (never less)
-    # and the excess is within a plausible dividend yield.
+    # The chain may fall short of the close ratio by at most tol_abs, and may
+    # exceed it by at most a plausible dividend yield.
     passed = (implied_div >= -tol_abs) and (implied_div <= 0.10)
 
     return ChainSpotCheckResult(
@@ -122,16 +115,16 @@ def chain_spotcheck(
     )
 
 
-# Known dividend-paying ETFs for spot-checks. Expected implied_div
-# (90d) should be ~quarterly dividend yield; broad US equity ETFs pay
-# ~0.3-0.6% per quarter.
+# Dividend payers: two broad-market ETF windows, a sector ETF and three single stocks.
+# implied_div over a quarter should be about one quarterly dividend yield, a few tenths of a
+# percent for the ETFs and somewhat more for the stocks.
 SPOTCHECK_CASES = [
     ("SPY", date(2024, 1, 2), date(2024, 4, 1)),  # Q1 2024, ~60-62 trading days
     ("SPY", date(2024, 4, 1), date(2024, 7, 1)),  # Q2 2024
-    ("XLK", date(2024, 1, 2), date(2024, 4, 1)),  # Tech sector ETF (user's example)
-    ("XOM", date(2024, 1, 2), date(2024, 4, 1)),  # Heavy dividend single-name
-    ("KO", date(2024, 1, 2), date(2024, 4, 1)),  # Classic dividend payer
-    ("T", date(2024, 1, 2), date(2024, 4, 1)),  # Very high yield, big expected gap
+    ("XLK", date(2024, 1, 2), date(2024, 4, 1)),  # sector ETF
+    ("XOM", date(2024, 1, 2), date(2024, 4, 1)),  # single stock, large dividend
+    ("KO", date(2024, 1, 2), date(2024, 4, 1)),  # single stock, steady payer
+    ("T", date(2024, 1, 2), date(2024, 4, 1)),  # single stock, highest yield of the set
 ]
 
 

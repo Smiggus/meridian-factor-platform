@@ -24,7 +24,7 @@ Env vars - flat Parquet (legacy fallback):
 
 Env vars - Meridian factor feature table (meridian-parquet bucket, separate warehouse):
   MERIDIAN_MINIO_ENDPOINT    MinIO/S3 endpoint; default: s3.example.com
-                             (external default is deliberate - bare research
+                             (the external default is intended - bare research
                              boxes use this path too; in-cluster callers
                              should override to
                              object-store.example.internal:9500)
@@ -74,14 +74,14 @@ from meridian_pipeline import adj_close_guard
 
 logger = logging.getLogger(__name__)
 
-# ── Iceberg catalog settings ──────────────────────────────────────────────────
+# Iceberg catalog settings
 LDP_LAKEHOUSE_ENDPOINT: str = os.environ.get(
     "LDP_LAKEHOUSE_ENDPOINT",
     "http://catalog.example.internal:8181/catalog",
 )
 LDP_MINIO_USE_SSL: bool = os.environ.get("LDP_MINIO_USE_SSL", "false").lower() == "true"
 
-# ── MinIO / S3 settings (shared by both paths) ───────────────────────────────
+# MinIO / S3 settings (shared by both paths)
 #
 # LDP_MINIO_ENDPOINT is env-first; the constant below is a last-resort
 # fallback for any caller that doesn't set it explicitly.
@@ -127,11 +127,11 @@ LDP_MINIO_ACCESS_KEY: str = os.environ.get("LDP_MINIO_ACCESS_KEY", "")
 LDP_MINIO_SECRET_KEY: str = os.environ.get("LDP_MINIO_SECRET_KEY", "")
 LDP_MINIO_REGION: str = os.environ.get("LDP_MINIO_REGION", "us-east-1")
 
-# ── Legacy flat-Parquet settings ─────────────────────────────────────────────
+# Legacy flat-Parquet settings
 LDP_PARQUET_BUCKET: str = os.environ.get("LDP_PARQUET_BUCKET", "ldp-parquet")
 PARQUET_BASE_PATH: str = os.environ.get("PARQUET_BASE_PATH", "")
 
-# ── Meridian-owned factor feature table settings ──────────────────────────────
+# Meridian-owned factor feature table settings
 # Separate S3 bucket (meridian-parquet) from LDP's ldp-parquet.
 # Credentials may differ; endpoint defaults to the public-facing MinIO URL
 # because this path also has legitimate callers OUTSIDE the cluster (bare
@@ -178,8 +178,7 @@ def _scrub_secrets(text: str) -> str:
     return text
 
 
-# ── Availability probes (per-process cache) ───────────────────────────────────
-
+# Availability probes (per-process cache)
 _iceberg_cache: bool | None = None
 _flat_parquet_cache: bool | None = None
 _last_probe_error: str | None = None
@@ -272,7 +271,7 @@ def availability_reason() -> str:
     return _last_probe_error or "not resolved yet"
 
 
-# ── DuckDB connection factories ───────────────────────────────────────────────
+# DuckDB connection factories
 #
 # Connections are cached per process (#128). The expensive setup - LOAD iceberg,
 # CREATE SECRET, and the ATTACH (a Lakekeeper REST round-trip) - ran on every
@@ -517,7 +516,7 @@ def _con():
     return _flat_con_cache
 
 
-# ── Legacy flat-Parquet path helpers ─────────────────────────────────────────
+# Legacy flat-Parquet path helpers
 
 
 def _ohlcv_glob() -> str:
@@ -537,7 +536,7 @@ def _in_list(tickers: list[str]) -> str:
     return "(" + ", ".join(f"'{t}'" for t in tickers) + ")"
 
 
-# ── Close-column selection (#125) ─────────────────────────────────────────────
+# Close-column selection (#125)
 # The OHLCV source carries up to three close columns that diverge across splits:
 #   close      - split-adjusted to today (LDP's canonical dual-write, always set)
 #   raw_close  - the price actually observed on the date (correct for market cap)
@@ -644,7 +643,7 @@ def _return_close_expr() -> str:
     return "close"
 
 
-# ── Read-boundary contract (Meridian #295, design doc D1) ────────────────────
+# Read-boundary contract (Meridian #295, design doc D1)
 #
 # WHY THIS EXISTS
 #   parquet_io is the single chokepoint every LDP read passes through. A
@@ -657,7 +656,7 @@ def _return_close_expr() -> str:
 #   reasoning about their own outputs. One assertion at the boundary replaces
 #   N consumers each defending themselves.
 #
-# THIS IS THE ONE DELIBERATELY BLOCKING DETECTIVE CONTROL
+# THIS IS THE ONE BLOCKING DETECTIVE CONTROL
 #   The repo invariant is that detective checks NEVER fail the run (a
 #   data-quality WARN halting scoring starves every downstream consumer). The
 #   read boundary is the documented exception: proceeding writes durable
@@ -704,7 +703,7 @@ ADJ_CLOSE_MAX_RATIO = adj_close_guard.ADJ_CLOSE_MAX_RATIO  # 1.1
 #     never on clean data.
 #   CRSP: rows above the bound are already handled row-by-row by
 #     adj_close_guard (substitute close, WARN), so this leg is a REGRESSION
-#     tripwire with a deliberately loose threshold, and it ALERTS rather than
+#     tripwire with a loose threshold, and it ALERTS rather than
 #     blocks. Blocking on it would halt every historical partition of a large
 #     recompute on an already-mitigated condition.
 NON_CRSP_ADJ_ABOVE_MAX_PCT = 0.5
@@ -763,7 +762,7 @@ def evaluate_ohlcv_contract(stats: dict) -> dict:
     metrics["rows"] = rows
     metrics["source_path"] = stats.get("source_path", "unknown")
 
-    # ── Leg 1: required columns present (replaces the SILENT DEGRADE) ──────
+    # Leg 1: required columns present (replaces the SILENT DEGRADE)
     missing = sorted(REQUIRED_OHLCV_COLUMNS - columns)
     if missing:
         violations.append(
@@ -774,7 +773,7 @@ def evaluate_ohlcv_contract(stats: dict) -> dict:
         )
     metrics["missing_columns"] = missing
 
-    # ── Leg 2: bars exist at all ──────────────────────────────────────────
+    # Leg 2: bars exist at all
     if rows == 0:
         violations.append({"leg": "bars_present", "detail": "no OHLCV bars for the score date"})
         # Nothing else is computable on an empty date.
@@ -789,7 +788,7 @@ def evaluate_ohlcv_contract(stats: dict) -> dict:
     partial = rows < CONTRACT_MIN_ROWS
     metrics["partial_day"] = partial
 
-    # ── Leg 3: ret_1d non-null share ──────────────────────────────────────
+    # Leg 3: ret_1d non-null share
     nonnull = stats.get("ret1d_nonnull")
     if nonnull is not None:
         pct = float(nonnull) / rows * 100.0
@@ -806,7 +805,7 @@ def evaluate_ohlcv_contract(stats: dict) -> dict:
             # for minutes. Report it, do not halt on it.
             (warnings if partial else violations).append(entry)
 
-    # ── Leg 4: adj_close never materially above close, per source ─────────
+    # Leg 4: adj_close never materially above close, per source
     by_source = stats.get("by_source") or []
     source_aware = SOURCE_COLUMN in columns and bool(by_source)
     if not source_aware:
@@ -856,7 +855,7 @@ def evaluate_ohlcv_contract(stats: dict) -> dict:
             (violations if no_dividend_adj else warnings).append(entry)
     metrics["by_source"] = per_source_metrics
 
-    # ── Leg 5: bar count vs the prior scored date (ALERTING) ──────────────
+    # Leg 5: bar count vs the prior scored date (ALERTING)
     prior_rows = stats.get("prior_rows")
     if prior_rows:
         ratio = rows / float(prior_rows)
@@ -1037,7 +1036,7 @@ def _adj_close_rejected_expr() -> str:
     return "adj_close" if "adj_close" in _ohlcv_columns() else "NULL"
 
 
-# ── Public fetch functions ────────────────────────────────────────────────────
+# Public fetch functions
 #
 # Each function tries the Iceberg path first (_iceberg_cache set by
 # parquet_available() which callers always invoke before reaching here).
@@ -1221,7 +1220,7 @@ def fetch_latest_prices(tickers: list[str], score_date: date) -> pl.DataFrame:
     cumulative split factor for any ticker that later splits (e.g. ~10x for a
     name that did a 10:1 split after score_date). Existing callers of THIS
     function (the legacy `_fetch_library_close_range`
-    PG-only batch path) are left untouched deliberately - do not widen
+    PG-only batch path) are left untouched - do not widen
     this function's basis; use `fetch_latest_mktcap_prices` below for any NEW
     market-cap-denominated consumer.
     """
@@ -1925,7 +1924,7 @@ def fetch_52w_high(score_date: date) -> pl.DataFrame:
     return out
 
 
-# ── Batch cursors: the ATH / 52w-high aggregates for a WINDOW of dates ────────
+# Batch cursors: the ATH / 52w-high aggregates for a WINDOW of dates
 #
 # `fetch_ath` and `fetch_52w_high` are per-date aggregates, and the burst
 # re-score kernel calls them once per partition. For a multi-year campaign that
@@ -1963,7 +1962,7 @@ def _as_date(value) -> date:
 def _local_con():
     """A private in-memory DuckDB connection for a cursor's cached window.
 
-    Deliberately NOT the process-cached read connection: `_iceberg_con()` closes
+    NOT the process-cached read connection: `_iceberg_con()` closes
     and rebuilds itself when its bearer token passes its TTL, which would take a
     temp table with it mid-campaign.
     """
@@ -2267,7 +2266,7 @@ class High52wCursor:
             con.close()
 
 
-# ── Meridian-owned feature table: DuckDB connection + helpers ─────────────────
+# Meridian-owned feature table: DuckDB connection + helpers
 #
 # The meridian-parquet bucket is a separate S3 warehouse from LDP's ldp-parquet.
 # It uses a dedicated DuckDB connection so its S3 credentials never bleed into
@@ -2603,8 +2602,7 @@ def factor_dedup_sql(select_expr: str, where: str, glob: str | None = None) -> s
     """
 
 
-# ── Meridian-parquet availability probe (per-process cache) ───────────────────
-
+# Meridian-parquet availability probe (per-process cache)
 _meridian_parquet_cache: bool | None = None
 _meridian_last_probe_error: str | None = None
 
@@ -2658,7 +2656,7 @@ def meridian_parquet_availability_reason() -> str:
     return _meridian_last_probe_error or "meridian-parquet not probed yet"
 
 
-# ── Chunked factor score reader ───────────────────────────────────────────────
+# Chunked factor score reader
 
 
 def _year_pages(start: date, end: date) -> Generator[tuple[date, date], None, None]:

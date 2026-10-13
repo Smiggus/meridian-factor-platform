@@ -5,13 +5,13 @@ Meridian#356. The burst box has no route to PostgreSQL by design and reads the
 LDP lake over S3. Two failure modes make a misconfigured box look like something
 else entirely:
 
-1. **ldp-parquet not readable.** `parquet_io` treats an unreachable lake as a
+1. ldp-parquet not readable. `parquet_io` treats an unreachable lake as a
    degradation and falls back to the PostgreSQL read path. On the box that PG
    call hits the ship-back shim and raises "PG connection attempted", so the
    operator sees a DATABASE error whose actual cause is an S3 permission. This
    probe names the real thing.
 
-2. **No route to PG at all.** A genuine connection attempt on a box with no
+2. No route to PG at all. A genuine connection attempt on a box with no
    route hangs until timeout rather than failing, so a run looks slow instead of
    broken.
 

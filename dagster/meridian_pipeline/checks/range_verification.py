@@ -78,10 +78,6 @@ from meridian_pipeline.checks.trading_day_checks import (
     non_trading_dates,
 )
 
-# ---------------------------------------------------------------------------
-# Result types
-# ---------------------------------------------------------------------------
-
 
 @dataclass
 class CheckResult:
@@ -122,9 +118,7 @@ class VerificationReport:
         }
 
 
-# ---------------------------------------------------------------------------
 # Pure decision helpers (DB-free, unit-tested)
-# ---------------------------------------------------------------------------
 
 
 def missing_dates(calendar: set[date], present: set[date]) -> list[date]:
@@ -183,11 +177,6 @@ def distribution_outliers(
     )
 
 
-# ---------------------------------------------------------------------------
-# DB access
-# ---------------------------------------------------------------------------
-
-
 def load_row_counts(engine, table: str, start: date, end: date) -> dict[date, int]:
     """Per-date row count for a scored table in [start, end]."""
     if table not in SCORED_TABLES:
@@ -230,9 +219,7 @@ def load_composite_means(engine, start: date, end: date) -> dict[date, float]:
     return {r[0]: float(r[1]) for r in rows if r[1] is not None}
 
 
-# ---------------------------------------------------------------------------
 # verify_range - the Tier 2 entry point
-# ---------------------------------------------------------------------------
 
 
 def verify_range(engine, start: date, end: date) -> VerificationReport:

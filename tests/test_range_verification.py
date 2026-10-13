@@ -6,10 +6,10 @@ Two layers:
   * the pure decision helpers (missing_dates, thin_dates, day_over_day_drift,
     distribution_outliers), which are DB-free;
   * verify_range end-to-end against a small SYNTHETIC in-memory dataset that
-    deliberately includes a known non-trading date, driven through a fake
+    includes a known non-trading date, driven through a fake
     engine so no database is touched.
 
-The fake engine is deliberately thin: it only has to answer the handful of
+The fake engine is thin: it only has to answer the handful of
 statements range_verification issues. It is NOT a SQL implementation - each
 query is recognised by a distinctive fragment and answered from the synthetic
 fixture, so the test asserts the CHECK LOGIC, not the SQL.

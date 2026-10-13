@@ -161,7 +161,7 @@ def test_interior_date_gap_is_refused_by_default():
 
 
 def test_interior_date_gap_allowed_with_explicit_override():
-    """A human who has reviewed the gap and states it deliberately can still
+    """A human who has reviewed the gap and says so explicitly can still
     promote the full declared range - the override is opt-in, not implicit."""
     conn, engine = MagicMock(), MagicMock()
     engine.begin.return_value.__enter__.return_value = conn

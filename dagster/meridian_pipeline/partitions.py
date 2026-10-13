@@ -1,16 +1,8 @@
-"""
-partitions.py
--------------
-Shared partition definitions for the Meridian Dagster code-server.
+"""Daily partition definitions shared by the Dagster assets.
 
-Extracted from `assets.py` and `risk_metrics_asset.py`, both of which used
-to define their own copy of `DAILY_PARTITIONS`. Two copies meant the
-`resolve_partition_start()` PG query ran twice on every run pod cold start
-(once per import). Centralising here halves that.
-
-If you add a new daily-partitioned asset, import `DAILY_PARTITIONS` from
-this module rather than re-creating it. Test
-`tests/test_partitions_module.py` enforces the single-instance invariant.
+Import `DAILY_PARTITIONS` from here instead of building another one. Creating it runs the
+`resolve_partition_start()` query against PostgreSQL, so every extra copy is an extra query on
+each run pod's cold start. `tests/test_partitions_module.py` checks that there is one instance.
 """
 
 from __future__ import annotations
@@ -18,34 +10,22 @@ from __future__ import annotations
 from dagster import BackfillPolicy, DailyPartitionsDefinition
 from meridian_pipeline.db import resolve_partition_start
 
-# end_offset=1 makes the current UTC day a valid partition key. The
-# post-close evaluation window of stale_factor_sensor (17:00 ET onwards)
-# falls before 00:00 UTC rollover, so without this offset the sensor
-# couldn't target today's ET date as a partition.
+# end_offset=1 makes the current UTC day a valid partition key. stale_factor_sensor evaluates
+# after the close (17:00 ET onwards), which is still before the 00:00 UTC rollover, and
+# without the offset it could not target today's ET date.
 DAILY_PARTITIONS = DailyPartitionsDefinition(start_date=resolve_partition_start(), end_offset=1)
 
-# Multi-partition backfill policy for the daily factor assets.
+# Backfill policy for the daily factor assets (#62). The asset bodies iterate
+# `context.partition_keys`, so the backfill daemon can put up to 50 partitions into one run pod
+# instead of starting a pod per partition. A 1000-partition rerun then takes about 20 pods.
 #
-# Phase 2 of #62. The asset compute bodies were refactored in Phase 1 to
-# iterate `context.partition_keys`; attaching this policy lets the backfill
-# daemon batch up to 50 partitions per run pod instead of launching one
-# pod per partition. For a 1000-partition rerun (2010-2013), that's
-# ~20 pods - cuts cold-start overhead 50x vs naive 1-per-partition, keeps
-# cluster pressure low (max 6 concurrent runs platform-wide), and limits
-# the OOM blast radius to 50 partitions if a pod fails mid-batch.
+# The limit was 10 until Meridian#79 (2026-05-13), raised for the 2010-2013 backfill. At 10 the
+# runs queued behind the platform's cap of 2 code-location pods. Each pod now runs longer, about
+# 15-25 minutes at 50, and one that dies mid-batch costs up to 50 partitions of rework. Total
+# throughput barely moved because the tenant cap is what limits it.
 #
-# Bump from 10 -> 50 (Meridian#79, 2026-05-13) for the 2010-2013 backfill.
-# Lower numbers caused too many pods to queue against the platform's
-# code_location cap of 2; bigger batches mean fewer pods and less cluster
-# churn. The trade-off is longer-running pods (~15-25 min each at 50);
-# both ends of the spectrum hit the same total throughput because the
-# tenant cap is the binding constraint, not per-pod latency.
+# Every daily asset has to use this one instance. Dagster refuses to build the implicit asset
+# job when co-materialized assets carry different BackfillPolicies.
 #
-# All daily assets MUST share this same instance: Dagster requires
-# co-materialized assets to carry a compatible BackfillPolicy or it
-# refuses to build the implicit asset job. Importing from one module
-# enforces the lockstep.
-#
-# Daily schedule (single partition) is unaffected - the policy only
-# activates during backfills with N > 1 partitions.
+# The daily schedule runs a single partition and never triggers the batching.
 DAILY_BACKFILL_POLICY = BackfillPolicy.multi_run(max_partitions_per_run=50)

@@ -2,7 +2,7 @@
 Tests for sensors.watermark_complete_sensor (Meridian #286: cron -> watermark
 cutover for daily phase-1 scoring).
 
-Background: the old daily_factor_scoring cron (schedules.py, now removed)
+Background: the old daily_factor_scoring cron (since removed)
 fired at a fixed wall-clock time sized against the upstream finish time. If
 the upstream ingest finishes later than that constant, the cron fires before
 ohlcv.ingest_watermark marks the date complete, and

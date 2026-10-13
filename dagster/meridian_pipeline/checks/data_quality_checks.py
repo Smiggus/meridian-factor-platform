@@ -8,9 +8,9 @@ Seven checks attached to composite_scores:
                                  per group per day).
 2. check_dq_zscore_drift      - per factor-group mean ~0 and std within sane bounds;
                                  catches broken sector neutralisation.
-3. check_dq_split_bias        - example_ratio_a lies within sane physical bounds
+3. check_dq_split_bias        - vol_surge lies within sane physical bounds
                                  (the split-bias class). Its
-                                 example_level_a / example_level_b legs were
+                                 drawdown_all / drawdown_52w legs were
                                  DELETED 2026-08-03 (#295 D5) - they bounded a
                                  quantity that is algebraically confined to
                                  [-1, 0] and so could never fire; (7) owns that
@@ -26,7 +26,7 @@ Seven checks attached to composite_scores:
                                  class; the contradiction-shaped counterpart to
                                  check_dq_universe_drift's count delta).
 7. check_dq_pinned_at_floor   - the share of the cross-section with
-                                 example_level_a / example_level_b pinned just
+                                 drawdown_all / drawdown_52w pinned just
                                  INSIDE the bottom of their physical range
                                  stays below a baseline. A range check
                                  cannot catch a value pinned just inside the
@@ -67,17 +67,14 @@ from dagster import (
     MetadataValue,
 )
 
-# ---------------------------------------------------------------------------
 # Thresholds (documented here so they appear in diffs when tuned)
-# ---------------------------------------------------------------------------
-
 # Row coverage: we require a conservative minimum number of distinct tickers
 # per factor group per day (see the constant below) to catch major upstream gaps
 # while tolerating normal universe churn (new listings, delistings, weekends
 # with stale data). The absolute minimum is intentionally conservative so that
 # a large drop (e.g. an upstream LDP partition gap) triggers a warning before
 # the composite is distorted.
-_COVERAGE_MIN_TICKERS = 2_000  # illustrative value in the showcase
+_COVERAGE_MIN_TICKERS = 2_000  # illustrative value
 
 # Z-score drift: after cross-sectional sector neutralisation the per-group
 # distribution should be roughly N(0,1). We allow |mean| <= 0.3 and std in
@@ -89,10 +86,10 @@ _ZSCORE_STD_HIGH = 2.0
 # Split-bias: physical-sanity bounds for the price-level factors that are
 # exposed to split-adjustment errors.
 #
-# DELETED 2026-08-03 (Meridian #295 D5): the `example_level_a` and
-# `example_level_b` legs. They asserted an ALGEBRAIC IDENTITY, not a
+# DELETED 2026-08-03 (Meridian #295 D5): the `drawdown_all` and
+# `drawdown_52w` legs. They asserted an ALGEBRAIC IDENTITY, not a
 # property of the data:
-#     example_level_a = (close - ath) / ath with close <= ath by construction,
+#     drawdown_all = (close - ath) / ath with close <= ath by construction,
 #     so the quantity is confined to [-1, 0] and a [-1, 1] bound cannot be
 #     violated by any corruption of any magnitude - the SAME corrupted series
 #     produces both numerator and denominator.
@@ -103,22 +100,22 @@ _ZSCORE_STD_HIGH = 2.0
 # floor - which is a statistic the corruption actually moves.
 #
 # What REMAINS here is the one leg that is not an identity:
-#   example_ratio_a      - a short-window / long-window volume ratio; unbounded
+#   vol_surge      - a short-window / long-window volume ratio; unbounded
 #                       above, so a bound is a real assertion. The cap is
-#                       deliberately loose: it catches pathological split-bias
+#                       loose: it catches pathological split-bias
 #                       outliers without false-positives on genuine volume
 #                       spikes. NOTE the bound is un-tuned and illustrative -
 #                       retightening or converting it to a distribution-shape
 #                       test is tracked as design-doc D5 remainder, phase 3, and
-#                       deliberately NOT done here because it needs its own
+#                       NOT done here because it needs its own
 #                       calibration against volume history.
 _SPLIT_BIAS_BOUNDS: dict[str, tuple[float, float]] = {
-    "example_ratio_a": (0.0, 75.0),
+    "vol_surge": (0.0, 75.0),
 }
 
 # Pinned-at-the-floor: _SPLIT_BIAS_BOUNDS above is a RANGE check, and a range
 # check cannot see a value pinned just INSIDE the range. A corrupted split
-# factor drives the price ratio toward 0, so example_level_a would collapse onto
+# factor drives the price ratio toward 0, so drawdown_all would collapse onto
 # its floor, which sits comfortably inside a [-1, 1] bound. This check tests
 # the SHAPE of that failure instead: the share of the cross-section within 1%
 # of the floor.
@@ -131,8 +128,8 @@ _SPLIT_BIAS_BOUNDS: dict[str, tuple[float, float]] = {
 # measurements of factors.daily_scores if that balance changes.
 _PINNED_FLOOR_VALUE = -0.99
 _PINNED_FLOOR_MAX_PCT: dict[str, float] = {
-    "example_level_a": 2.0,
-    "example_level_b": 2.0,
+    "drawdown_all": 2.0,
+    "drawdown_52w": 2.0,
 }
 
 # Universe drift: a sudden >20% change in the scored ticker count between
@@ -167,10 +164,8 @@ _LIQUID_UNSCORED_MIN_DOLLAR_VOLUME = 1_000_000.0
 _LIQUID_UNSCORED_MAX_TICKERS = 50
 
 
-# ---------------------------------------------------------------------------
 # Exception-safety decorator: all @asset_check functions are WARN-only
 # monitoring checks and must never raise into the run.
-# ---------------------------------------------------------------------------
 
 
 def _warn_on_error(fn):
@@ -180,13 +175,9 @@ def _warn_on_error(fn):
     exception (including transient DB errors or schema bugs) and returns an
     AssetCheckResult with passed=False, severity=WARN so the run continues.
 
-    ERRORED IS NOT FAILED (Meridian #295 D3.2). The result carries
-    `outcome="errored"` so a check that has been RAISING for a month is
-    distinguishable from a check that has been FAILING for a month. Without
-    that distinction the two render identically, and a broken detector -
-    which is silently REMOVED coverage - reads as a data finding. The
-    notification side of the same distinction is `notify_errored_check`;
-    checks/alerting.py wires both for the standalone checks.
+    The result carries `outcome="errored"` (Meridian #295 D3.2), and
+    `notify_errored_check` is the notification side of it; checks/alerting.py
+    wires both for the standalone checks.
 
     Apply directly UNDER @asset_check so that @asset_check sees the preserved
     function name (functools.wraps copies __name__ / __wrapped__ etc.).
@@ -221,9 +212,7 @@ def _warn_on_error(fn):
     return wrapper
 
 
-# ---------------------------------------------------------------------------
 # Pure pass/fail helpers (DB-free, unit-testable)
-# ---------------------------------------------------------------------------
 
 
 def coverage_ok(n: int) -> bool:
@@ -261,7 +250,7 @@ def split_bias_ok(factor: str, value: float) -> tuple[bool, str]:
     Only checks factors listed in _SPLIT_BIAS_BOUNDS; unknown factors pass.
 
     Args:
-        factor: factor_name string (e.g. "example_level_a").
+        factor: factor_name string (e.g. "drawdown_all").
         value:  numeric value to validate.
 
     Returns:
@@ -300,7 +289,7 @@ def universe_drift_ok(curr: int, prev: int) -> tuple[bool, str]:
 
 
 # Meridian#298. A factor's row count may fall to this fraction of its
-# own trailing median before we call it a collapse. Deliberately generous: real
+# own trailing median before we call it a collapse. Generous: real
 # cross-sections breathe with the universe, and a check that cries wolf gets
 # muted, which is how a real gap goes unseen.
 _CONTINUITY_MIN_FRACTION = 0.5
@@ -366,7 +355,7 @@ def pinned_at_floor_ok(factor: str, pinned: int, total: int) -> tuple[bool, str]
     empty cross-sections pass.
 
     Args:
-        factor: factor_name string (e.g. "example_level_a").
+        factor: factor_name string (e.g. "drawdown_all").
         pinned: count of non-null values below _PINNED_FLOOR_VALUE.
         total:  count of non-null values for the factor on the date.
 
@@ -388,9 +377,7 @@ def pinned_at_floor_ok(factor: str, pinned: int, total: int) -> tuple[bool, str]
     return True, ""
 
 
-# ---------------------------------------------------------------------------
 # Helper shared by all checks below
-# ---------------------------------------------------------------------------
 
 
 def _date_range_label(kr) -> str:
@@ -399,7 +386,6 @@ def _date_range_label(kr) -> str:
     return f"{kr.start}..{kr.end}"
 
 
-# ---------------------------------------------------------------------------
 # Tier 1 inlined checks (#285): pure, DB-free evaluators built on the
 # decision helpers above. Called by composite_scores (assets.py) once per
 # partition against `daily` (the DataFrame it already read for the date) -
@@ -407,7 +393,6 @@ def _date_range_label(kr) -> str:
 # check_dq_universe_drift needs the prior scored trading day's ticker count,
 # which composite_scores fetches with one small reused-engine query per date
 # (same cost as the original check; still folds into the existing pod).
-# ---------------------------------------------------------------------------
 
 
 def evaluate_dq_row_coverage(daily: "pd.DataFrame") -> dict:
@@ -442,7 +427,7 @@ def evaluate_dq_split_bias(daily: "pd.DataFrame") -> dict:
     physical-sanity bounds. WARNs if >0.5% of non-null rows violate for any
     one factor.
 
-    Scoped to _SPLIT_BIAS_BOUNDS, which is `example_ratio_a` only since #295 D5
+    Scoped to _SPLIT_BIAS_BOUNDS, which is `vol_surge` only since #295 D5
     deleted the two legs that asserted an algebraic identity - see that
     constant's comment. The ATH-distance factors are now covered by
     evaluate_dq_pinned_at_floor, which tests a statistic the defect moves.
@@ -623,7 +608,7 @@ def evaluate_dq_factor_continuity(engine, daily: "pd.DataFrame", score_date) -> 
 
     medians = hist.groupby("factor_name")["n"].median().to_dict()
 
-    # Union, not just the factors present today: a factor that vanished
+    # Union of the history and today's factors: a factor that vanished
     # ENTIRELY is absent from `curr`, and that is precisely the case worth
     # catching. Iterating only over what is present would make the check blind
     # to its own motivating defect.
@@ -672,13 +657,11 @@ def evaluate_dq_composite_freshness(engine) -> dict:
     }
 
 
-# ---------------------------------------------------------------------------
 # Freshness helpers - composite_scores must not be stale by > 1 calendar day
 # behind the most recent expected trading weekday (weekends are skipped; a
 # Friday close is expected to persist until Monday morning without alarming).
 # evaluate_dq_composite_freshness() above is NOT partition-scoped - it runs
 # once per composite_scores materialisation as a global freshness probe.
-# ---------------------------------------------------------------------------
 
 
 def _latest_expected_trading_day(as_of: date) -> date:

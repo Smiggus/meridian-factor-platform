@@ -441,7 +441,7 @@ def test_ticker_within_tolerance_is_not_excluded():
 def test_legitimate_halt_inside_tolerance_is_not_excluded():
     # A multi-week trading halt (e.g. an SEC Rule 12(k) suspension, capped at
     # 10 trading days by statute) must not trip the fallback - the tolerance
-    # is deliberately set above that cap. Exercise exactly at the 10-day
+    # is set above that cap. Exercise exactly at the 10-day
     # statutory cap.
     cal = _trading_calendar(60, "2026-07-28")
     score_date = cal[-1].date()
@@ -663,7 +663,7 @@ def test_bars_long_after_delisting_mean_a_wrong_link_454(monkeypatch, caplog):
     """Meridian#454: bars printed more than DELISTING_LINK_TOLERANCE_DAYS after
     the linked entity's delisting contradict the link (LDP enrichment carries a
     live ticker onto a dead predecessor, e.g. a ticker linked to a dead predecessor listing).
-    Those tickers are NOT delisted, and the guard logs them. The deliberate
+    Those tickers are NOT delisted, and the guard logs them. The accepted
     cost: a true ghost-bar ticker (DEADCO) is no longer caught here in the
     2026+ regime; the stale-by-bars rule is its only remaining guard."""
     score_date = date(2026, 7, 31)
@@ -898,7 +898,7 @@ def test_delisted_query_is_windowed_and_pit_bounded(monkeypatch):
 
 
 def test_delisted_window_covers_the_stale_tolerance():
-    """The windowing argument's load-bearing invariant: a ticker missing from
+    """The windowing argument's central invariant: a ticker missing from
     the delisting window must already be caught by the independent
     stale-by-bars guard. That holds only while the window (calendar days) is
     comfortably longer than STALE_TRADING_DAY_TOLERANCE (trading days, ~1.4

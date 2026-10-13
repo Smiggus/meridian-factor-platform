@@ -91,7 +91,7 @@ import dagster  # noqa: E402
 class _FakeBackfill:
     """Minimal PartitionBackfill stand-in.
 
-    Deliberately duck-typed rather than a real PartitionBackfill: constructing
+    Duck-typed rather than a real PartitionBackfill: constructing
     a genuine asset backfill requires a serialized AssetBackfillData bound to a
     live asset graph, which is exactly the coupling the sensor's
     _backfill_partition_names helper exists to tolerate the absence of. The

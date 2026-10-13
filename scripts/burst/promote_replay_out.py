@@ -6,29 +6,26 @@ Meridian#356. Runs in-cluster or on a LAN box: reads
 upserts every date under ONE explicit campaign so the whole pass has a single
 auditable id regardless of how many box runs produced it.
 
-## It refuses before it writes
+The completeness check runs before anything is written. A box run that died
+two thirds through ships a prefix that looks well formed (the files present are
+valid parquet with correct columns), and promoting it would leave a third of
+the range uncorrected, which shows up as a coverage hole days later, if at all.
 
-The completeness gate is the point. A box run that died two thirds through ships
-a prefix that looks perfectly well-formed - the files present are valid parquet
-with correct columns - and promoting it would leave a third of the range
-uncorrected, surfacing as a coverage hole days later, if at all.
+Before any upsert it requires:
 
-So before any upsert:
+  * the manifest exists and declares `complete`
+  * the set of date= directories matches the manifest's dates_written exactly,
+    in both directions (a file the manifest does not know about is as
+    suspicious as a manifest entry with no file)
+  * per-date row counts match the manifest
 
-  * manifest must exist and declare `complete`
-  * the set of date= directories must MATCH the manifest's dates_written exactly,
-    in both directions (a file the manifest does not know about is as suspicious
-    as a manifest entry with no file)
-  * per-date row counts must match the manifest
-  * the git SHA is reported, so promoting output from unknown code is a visible
-    decision rather than an accident
-
-Only then does it open the campaign context and upsert.
+The git SHA of the producing code is reported. Only then does it open the
+campaign context and upsert.
 
 It also refuses when the lakehouse mirror is configured but not ready
 (lakehouse.assert_dual_write_ready), because the per-date mirror write is
 best-effort and would otherwise drift silently after PG commits. Pass
-`--no-iceberg` to accept a PG-only promote deliberately.
+`--no-iceberg` to accept a PG-only promote.
 """
 
 import argparse
@@ -106,7 +103,7 @@ def verify(con, root: str) -> dict:
             "finish its date range; promoting it would leave a silent coverage hole."
         )
 
-    # str() on the hive partition value, deliberately. DuckDB autocasts a
+    # str() on the hive partition value, on purpose. DuckDB autocasts a
     # `date=YYYY-MM-DD` partition column to DATE (it returned VARCHAR in older
     # versions), so `present` came back as datetime.date while `declared` is
     # ISO strings from the manifest JSON. The two sets then never intersect and

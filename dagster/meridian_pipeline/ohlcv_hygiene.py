@@ -1,69 +1,47 @@
-"""
-ohlcv_hygiene.py
------------------
-Shared bogus-print / illiquid-name floor for direct PostgreSQL `ohlcv.prices`
-consumers (Meridian #275, LDP #182).
+"""Shared floor for bogus prints and illiquid names, for code that reads `ohlcv.prices` in
+PostgreSQL directly (Meridian #275, LDP #182).
 
-Background: a class of bad close prints can reach PG `ohlcv.prices`:
-sub-penny / zero-volume prints that produce impossible `ret_1d` values.
-Illustrative (synthetic) pattern:
+Some bad close prints reach PG `ohlcv.prices`: sub-penny or zero-volume prints that produce
+impossible `ret_1d` values. A synthetic example:
 
     day 1  close=0.000001  volume=1000  ret_1d=-0.999999   (~-100%)
     day 2  close=0.5       volume=0     ret_1d=499999.0    (huge positive)
 
-Note the bogus VALUE lands on the row whose OWN close/volume is fine
-(day 2); it is the PRIOR day's close that was bogus. Flooring on
-`close < MIN_PRICE_FLOOR OR volume <= 0` catches both rows in this pattern:
-the day-1 row directly (sub-penny close) and the day-2 row directly (zero
-volume - a stale/non-traded print, not a real trade).
+The bad value on day 2 sits on a row whose own close is fine, since it was the prior day's close
+that was bogus. Flooring on `close < MIN_PRICE_FLOOR OR volume <= 0` catches both rows: day 1 by
+its sub-penny close and day 2 by its zero volume, which marks a stale print and not a trade.
 
-This module centralises the floor first introduced for the risk factor
-group (#259, commit 254d524: `_MIN_PRICE_FLOOR` + `_fetch_delisted_tickers`
-in `risk_factor_scores_asset.py`) and extends it with a dollar-volume (ADV)
-floor, so `check_ret1d_input_quality` and `risk_metrics` can exclude the same
-class of bogus/illiquid rows the risk group already excludes, instead of
-each consumer inventing its own thresholds.
+The floor was first written for the risk factor group (#259: `_MIN_PRICE_FLOOR` and
+`_fetch_delisted_tickers` in `risk_factor_scores_asset.py`). It is collected here and extended
+with a dollar-volume (ADV) floor, so that `check_ret1d_input_quality` and `risk_metrics` exclude
+the same rows the risk group does and no consumer invents its own thresholds. Most
+extreme-|ret_1d| rows are bogus prints or illiquid shells. What survives the floor is
+single-name outliers in liquid tickers, real large moves or data errors, and that is what the
+check should keep judging. Applied to the check's own aggregate, the floor leaves a small
+residue from one name, so the check's sensitivity to broad corruption (the `n_extreme > 10` /
+std bound) is unchanged.
 
-Rationale: most extreme-|ret_1d| rows are pure bogus prints (sub-cent close or
-zero volume) or illiquid shells; the rows that remain after the full floor are
-single-name outliers in genuinely liquid tickers (real large moves or
-liquid-name data errors) - exactly the class the check should keep judging.
-Applying this floor to the check's own aggregate logic leaves only a small
-residue driven by a single outlier name, so the check's broad-
-corruption sensitivity (the `n_extreme > 10` / std bound) is unaffected.
+Delistings have two guards. `fetch_delisted_tickers` reads `entities.companies.delisting_date`,
+a nullable upstream column. Where it is NULL, `NULL < score_date` is never true and the guard
+lets the ticker through, so the cross-section can grow with names that have no recent price
+(#291). `stale_tickers_from_last_seen` does not depend on that column: a ticker with no traded
+bar within `STALE_TRADING_DAY_TOLERANCE` trading days of `score_date` is excluded whether or not
+`delisting_date` is set. Callers OR the two, and either is enough to exclude a ticker for the
+partition.
 
-PRICE-STALENESS FALLBACK (Meridian #291): `fetch_delisted_tickers`'s only
-input is `entities.companies.delisting_date`, a nullable upstream column. If
-`delisting_date` is NULL for a set of entities, `NULL < score_date` is never
-true, so the guard fails open and the cross-section can grow with tickers
-that have no recent price.
-`stale_tickers_from_last_seen` is a second, independent
-signal that does not depend on that column at all: a ticker with no traded
-bar within `STALE_TRADING_DAY_TOLERANCE` trading days of `score_date` is
-excluded regardless of whether `delisting_date` is populated. The two
-guards are OR-ed by callers, never substituted for each other - either one
-firing is sufficient to exclude a ticker for the partition.
+`fetch_delisted_tickers` also has to avoid the opposite error, a false positive on a reused
+ticker. Symbols are recycled after the original issuer dies, so a query of the form `SELECT
+DISTINCT p.ticker ... JOIN entities.companies c ON c.entity_id = p.entity_id WHERE
+c.delisting_date < :score_date` gives a live issuer its dead predecessor's delisting, and the
+name drops out of the scored universe. Instead the function resolves each ticker to the entity
+behind its most recent daily bar as of score_date (`DISTINCT ON (p.ticker) ... ORDER BY
+p.ticker, p.ts_event DESC, p.entity_id DESC NULLS LAST`) and tests only that entity's
+delisting_date. Its docstring explains the windowing decision.
 
-SECOND FAILURE MODE (reused-ticker false POSITIVE - the opposite
-failure mode to the one above): `fetch_delisted_tickers` must not match a
-ticker merely because ANY entity that ever used that ticker symbol was
-delisted (a `SELECT DISTINCT p.ticker ... JOIN entities.companies c ON
-c.entity_id = p.entity_id WHERE c.delisting_date < :score_date` form). Ticker
-symbols are recycled after the original issuer dies, so a live issuer would
-inherit its dead predecessor's delisting.
-
-When reading a scored-universe drop after a change to the delisting inputs,
-read it carefully, because part of it can be correct: newly-visible dead
-tickers are properly excluded. The BUG class is the residual: tickers whose
-current issuer is alive and printing but were excluded because a dead
-PREDECESSOR entity carried a delisting_date. Because this guard feeds the
-scoring assets, such names would vanish from the serving surface at once.
-
-The fix resolves the ticker to the entity behind its MOST RECENT daily bar
-as of score_date (`DISTINCT ON (p.ticker) ... ORDER BY p.ticker,
-p.ts_event DESC, p.entity_id DESC NULLS LAST`) and tests only THAT entity's delisting_date, so a
-recycled symbol is judged on its current issuer. See the
-`fetch_delisted_tickers` docstring for the windowing decision.
+When the scored universe shrinks after a change to the delisting inputs, part of the drop is
+usually correct, because newly visible dead tickers are properly excluded. The thing to look for
+is the residual: tickers whose current issuer is alive and printing but were excluded because a
+dead predecessor carried a delisting_date.
 """
 
 from __future__ import annotations
@@ -80,7 +58,7 @@ _log = logging.getLogger(__name__)
 
 # Minimum traded (raw, unadjusted) close below which a row is treated as a
 # bogus print. Matches #259's `_MIN_PRICE_FLOOR` (risk_factor_scores_asset.py) -
-# kept in sync deliberately; if one changes, both should.
+# kept in sync by hand; if one changes, both should.
 MIN_PRICE_FLOOR = 0.01
 
 # Minimum trailing-day dollar volume (raw_close * volume) below which a row
@@ -104,9 +82,7 @@ BOGUS_PRINT_SQL_PARAMS = {
 }
 
 
-# ─────────────────────────────────────────────
 # Implausible ret_1d magnitude (Meridian #336)
-# ─────────────────────────────────────────────
 # The floor above catches BOGUS PRINTS - sub-penny closes, zero-volume stale
 # prints, dead illiquid shells. It does NOT catch the OTHER corruption class:
 # a perfectly liquid, perfectly priced name whose `ret_1d` is discontinuous
@@ -124,7 +100,7 @@ BOGUS_PRINT_SQL_PARAMS = {
 # equity move a scored name could plausibly print and orders of magnitude
 # below a corrupted-row scale.
 #
-# Note this is DELIBERATELY tighter than the 50.0 gate in
+# Note this is tighter than the 50.0 gate in
 # checks/ret1d_checks.py. That gate is aligned to LDP #182's CLEANING boundary
 # (LDP NULLs |ret_1d| > 50 upstream, so a check that re-flagged them would fire
 # on rows that are already gone); this is a CONSUMER-side exclusion bound, and
@@ -147,7 +123,7 @@ def implausible_ret1d_mask(ret_1d: pd.Series) -> pd.Series:
     implausible and must be EXCLUDED (not clipped) before any return
     aggregation. True for non-finite values and for |ret_1d| > MAX_ABS_RET_1D.
 
-    Exclusion rather than clipping is deliberate: clipping a 4e6 return to
+    Exclusion rather than clipping is on purpose: clipping a 4e6 return to
     +500% still lets a corrupt row masquerade as a real extreme and still
     moves an equal-weight decile mean materially, whereas
     dropping it costs one name-day out of hundreds of thousands.
@@ -199,9 +175,7 @@ _link_warned: set = set()
 _LINK_WARN_LIST_MAX = 25
 
 
-# ─────────────────────────────────────────────
 # Reason codes that are NOT delistings (Meridian#325)
-# ─────────────────────────────────────────────
 #
 # CRSP's `dlstcd` 100 means "issue still trading at end of file". It is an
 # ACTIVE marker, the opposite of a delisting. A loader that copied it into
@@ -830,7 +804,7 @@ def batch_hygiene_exclusions(
     OHLCV fetches ONCE at batch scope, before its per-partition loop, so the
     per-partition `hygiene_exclusions` call cannot bound those fetches at
     all - they see the full delisted tape. This function is the
-    filter that CAN be applied at batch scope. It is deliberately
+    filter that CAN be applied at batch scope. It is
     conservative: the surviving list is a strict SUPERSET of every
     partition's own post-hygiene universe, so the per-partition guard stays
     the sole authority over what actually gets scored and no value changes.
@@ -844,7 +818,7 @@ def batch_hygiene_exclusions(
       after the delisting_date. So the batch leg excludes only tickers
       delisted at BOTH batch_start and batch_end. A ticker delisted at both
       ends printed no bar beyond the tolerance by batch_end, so none in
-      between either, and stays delisted throughout. This is deliberately
+      between either, and stays delisted throughout. This is
       conservative (it can only exclude less than the per-partition guard
       does, never more) and leaves the per-partition guard as the sole
       authority. Entirely before DELISTING_LINK_CHECK_SINCE the plain

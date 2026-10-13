@@ -1,7 +1,7 @@
 """
-burst_backfill.py - CONTROL plane of the elastic burst-compute pattern.
+burst_backfill.py - the Dagster side of the elastic burst-compute pattern.
 
-Design: docs/proposals/07-elastic-burst-compute-pipes.md.
+Design write-up: docs/proposals/07-elastic-burst-compute-pipes.md in the private repo.
 
 This is the parked-session Dagster asset that orchestrates a burst run on an
 off-cluster box (a dev machine now; an EC2 spot node later) WITHOUT ever dialing that
@@ -16,10 +16,10 @@ box. It:
      transport-simple completion signal), then folds the reported
      materialization back into Dagster lineage.
 
-DELIBERATELY NOT REGISTERED in definitions.py yet. The manual-arm wait loop
+NOT REGISTERED in definitions.py yet. The manual-arm wait loop
 below needs to be exercised against dagster 1.13.4's Pipes semantics before it
-goes live on the cluster (proposal 07 open question 2). Until then the muscle
-plane runs standalone via scripts/burst/pipes_dask_driver.py (which degrades
+goes live on the cluster (proposal 07 open question 2). Until then the burst
+driver runs standalone via scripts/burst/pipes_dask_driver.py (which degrades
 gracefully with no orchestrator). Register this asset only after that
 validation - importing this module has no effect until then.
 
@@ -48,7 +48,7 @@ class _ScopedPipesS3MessageReader(PipesS3MessageReader):
     at `s3://<bucket>/<random>/N.json` - the BUCKET ROOT. The external process
     writes those objects.
 
-    The burst box's credential is deliberately scoped to
+    The burst box's credential is scoped to
     `s3://meridian-parquet/burst/*` (plus read-only on the lake), with no access
     to the bucket root. A default reader therefore fails closed at run time: the
     driver's `report_*` calls 403 on write, and the orchestrator sees no messages

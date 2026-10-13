@@ -1,8 +1,7 @@
-"""Shared YYYY-MM-DD query-parameter validation for the API routers (API-005).
+"""YYYY-MM-DD query-parameter parsing shared by the routers (API-005).
 
-Every route that documents a YYYY-MM-DD parameter parses it here, so a
-malformed value is rejected with the same 400 before any lookup happens
-instead of being truncated, coerced by pandas, or turned into a "no data" 404.
+Every route with a date parameter calls parse_iso_date. A bad value gets a 400 up front, where
+it used to be truncated, passed to pandas or reported as a 404 for missing data.
 """
 
 from __future__ import annotations
@@ -25,15 +24,12 @@ _COMPACT_DATE_RE = re.compile(r"\d{8}")
 
 
 def parse_iso_date(raw: str, param_name: str = "date") -> date_cls:
-    """Parse a calendar date parameter; raise HTTP 400 otherwise.
+    """Parse a calendar date parameter, or raise HTTP 400.
 
-    Accepted (the API contract is frozen, so what used to work keeps working):
-    `YYYY-MM-DD`, `YYYY-MM-DD` followed by an ISO time suffix (`T12:34:56`,
-    ` 12:34:56`, with optional fraction and `Z`/offset), and compact
-    `YYYYMMDD`. The time suffix is ignored. Trailing garbage, other
-    separators and impossible dates ("2026-02-30") are rejected. Surrounding
-    whitespace is ignored. Callers that default an omitted parameter do so
-    before calling this.
+    The contract is frozen, so every form that used to work still does: `YYYY-MM-DD` with
+    or without an ISO time suffix (which is dropped), and compact `YYYYMMDD`. Surrounding
+    whitespace is stripped. Anything else is a 400, impossible dates included.
+    Callers fill in a default for an omitted parameter before calling.
     """
     text = raw.strip() if isinstance(raw, str) else raw
     if isinstance(text, str):

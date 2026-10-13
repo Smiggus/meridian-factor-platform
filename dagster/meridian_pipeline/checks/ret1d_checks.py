@@ -3,40 +3,20 @@ ret_1d input-quality asset check (meridian-factors code location).
 
 Attached to momentum_scores (daily-partitioned). momentum_scores chains
 ret_1d straight out of ohlcv.prices, so a corrupted ret_1d column upstream
-silently poisons momentum (and, downstream, the composite and the factor
-risk model). This check is a tripwire: it inspects
-the raw ret_1d cross-section for the partition date(s) BEFORE the corruption
-propagates and FAILs the partition (blocking=True) if the day looks broken.
+poisons momentum and, downstream, the composite and the factor risk model.
+The check inspects the raw ret_1d cross-section for the partition date(s)
+before that happens and fails the partition (blocking=True) if the day looks
+broken.
 
-Failure shape: a bad ret_1d recompute produces cross-sections with
-many returns beyond |0.5| and a grossly inflated cross-sectional std - values
-that are physically impossible for a daily equity cross-section.
+A bad ret_1d recompute produces cross-sections with many returns beyond |0.5|
+and a grossly inflated cross-sectional std, values a daily equity
+cross-section cannot have. A normal day has a small std and no extremes. The
+thresholds, and why each sits where it does, are commented next to the
+constants below.
 
-Calibration reference (shapes, not measurements):
-    normal day       : small std, no extremes, |ret_1d| <= 50          -> PASS
-    broad corruption : inflated std or many extremes                   -> FAIL
-
-The single-name min/max gate is deliberately wide: a tight bound would treat
-genuine biotech/M&A/SPAC moves as corruption and halt the composite on live,
-liquid, correctly-scored names. The gate is aligned to the upstream platform's
-cleaning boundary: |ret_1d| > 50 is NULLed upstream and everything at/below 50
-is kept, so this gate blocks only |ret_1d| > 50 - no value the upstream
-deliberately kept can halt the composite. On cleaned data the gate effectively
-never trips (those rows are already NULL and excluded); it is a forward safety
-net that mirrors the upstream rule. See the _RET_ABS_MIN / _RET_ABS_MAX
-threshold comment below.
-
-Broad-corruption detection stays: the std gate (std > 0.15) is now computed
-over WINSORIZED ret_1d (clamped to [-1, +1]) so a single genuine large
-single-name move does not inflate the cross-sectional std past the bound on
-its own (one very large genuine move would otherwise drive std past the
-bound); the extreme-count gate (> 10 names with |ret_1d| > 0.5, on RAW
-values) remains the primary broad-corruption signal. Both still fire on the
-broad-corruption shape (many liquid names extreme together on one day).
-
-Note: checks use context.partition_key_range (not context.partition_key) so
-they work in both single-partition (daily schedule) and multi-partition
-batched (meridian_backfill_job) runs. Mirrors factor_checks / risk_metrics_checks.
+Checks use context.partition_key_range (not context.partition_key) so they
+work in both single-partition (daily schedule) and multi-partition batched
+(meridian_backfill_job) runs. Mirrors factor_checks / risk_metrics_checks.
 """
 
 from __future__ import annotations
@@ -61,7 +41,6 @@ from meridian_pipeline.ohlcv_hygiene import (
 )
 from meridian_pipeline.risk_metrics_asset import _get_engine
 
-# ── Thresholds ──────────────────────────────────────────────────────────
 # A daily equity cross-section is tight: std ~0.03-0.05, essentially no
 # returns beyond +/-50%. These bounds sit comfortably above normal-day noise
 # (incl. earnings-day single-name moves) while catching the corruption.
@@ -95,7 +74,7 @@ _MIN_ROWS = 500
 # everything at/below 50 (genuine moves of several hundred percent and
 # beyond are all preserved). This
 # gate MUST match that boundary so there is NO gap where a value LDP
-# deliberately kept would still halt the composite here. Both sides gate
+# kept would still halt the composite here. Both sides gate
 # on |ret_1d| > 50:
 #   - max: block max_ret > 50.0 (LDP keeps everything <= 50).
 #   - min: block min_ret < -50.0 (LDP keeps everything >= -50; a real total
@@ -105,10 +84,6 @@ _MIN_ROWS = 500
 # cleaned data this gate effectively never trips - it is a forward safety
 # net that mirrors LDP's cleaning rule for any future bad print that slips
 # in before LDP NULLs it.
-# Broad-corruption detection is unaffected: _STD_MAX and _EXTREME_COUNT_MAX
-# (unchanged above) still catch the broad-corruption shape (many liquid
-# names moving together on one day), which is what this check exists to
-# stop - a single extreme-but-real name should never block the composite.
 _RET_ABS_MIN = -50.0  # aligned to LDP #182: |ret_1d| > 50 is NULLed upstream
 _RET_ABS_MAX = 50.0  # aligned to LDP #182: LDP keeps everything <= 50
 
@@ -220,11 +195,7 @@ def _evaluate_days(df: pd.DataFrame) -> tuple[list[dict], list[str], int]:
         "day has cross-sectional std (over ret_1d winsorized to [-1, +1], so "
         "a single legit large move does not trip it) > 0.15, more than 10 "
         "returns with |ret_1d| > 0.5, or a single-name min/max with "
-        "|ret_1d| > 50 "
-        "(#275 recalibration: the single-name gate is aligned exactly to "
-        "LDP #182's cleaning boundary - LDP NULLs |ret_1d| > 50 and keeps "
-        "everything <= 50, so this gate never fires on a value LDP kept and "
-        "acts as a forward safety net mirroring LDP's rule). Dates with "
+        "|ret_1d| > 50. Dates with "
         "fewer than 500 rows (post-floor) are treated as partial and "
         "skipped "
         "(coverage is owned by check_factor_coverage). Blocking so a corrupt "

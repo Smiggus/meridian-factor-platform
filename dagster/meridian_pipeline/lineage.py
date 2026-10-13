@@ -1,53 +1,32 @@
-"""Write-campaign lineage: who wrote a factor row, from what input vintage,
-with what code version (Meridian #294 / #295).
+"""Write-campaign lineage: who wrote a factor row, from what input vintage, with what code
+version (Meridian #294 / #295).
 
-WHY THIS EXISTS
----------------
-On 2026-08-01 the question "what wrote this row, from what input vintage, with
-what code version" could not be answered. `factors.daily_scores` carried a
-single `computed_at timestamptz DEFAULT now()`, and
-`db.copy_replace_daily_scores` omitted that column from its COPY list so the
-table DEFAULT stamped WRITE time, not compute time. Identifying which
-historical write campaign produced which rows was therefore done by CLUSTERING
-`computed_at` values, and that inference is unreliable.
+On 2026-08-01 nobody could say what had written a given row. `factors.daily_scores` had one
+column for it, `computed_at timestamptz DEFAULT now()`, and `db.copy_replace_daily_scores` left
+that column out of its COPY list, so the DEFAULT stamped write time and not compute time.
+Working out which historical write produced which rows meant clustering `computed_at` values,
+which is unreliable. When a bad input turned up there was no record of which rows had consumed
+it, so the only safe recompute was the full history. Lineage is what lets that become a scoped
+recompute.
 
-The practical cost is the blast radius: when a bad input is discovered, the
-only *safe* recompute scope is the full history, because nothing records which rows
-consumed the bad vintage. This module is what converts a blanket recompute into
-a scoped one.
+A campaign is one write episode: a Dagster asset run, a burst promote, a manual backfill script.
+It is recorded once in `factors.write_campaigns`, and each row it wrote carries a `campaign_id
+bigint`, so full provenance is a join away.
 
-THE MODEL
----------
-A **campaign** is one logical write episode: a Dagster asset run, a burst
-promote, a manual backfill script invocation. It is recorded once in
-`factors.write_campaigns` and referenced by a single `campaign_id bigint` on
-each row it wrote. One integer per row; full provenance by join.
+A write gets its campaign in one of three ways, tried in this order. The caller can pass
+`campaign_id=` to a `db.upsert_*` or `db.copy_replace_*` helper, as the batch scripts do. Or it
+can wrap its work in `open_campaign(...)`, which binds the campaign to a ContextVar so every
+write inside the block picks it up without a change at the call site. Scripts and assets that
+know their own input vintage usually do this. If neither happened, the first write in the process
+opens a campaign from the environment (writer, code version, run id, host, pid, argv) with an
+empty `input_vintage`, so no write is anonymous.
 
-Three ways a campaign gets attached to a write, in precedence order:
+A lineage failure never fails a write. Every public entry point catches its own exceptions and
+returns None, and the row then goes in with a NULL campaign_id, as it did before this module
+existed. `MERIDIAN_LINEAGE_DISABLED=1` turns the whole thing off. `MERIDIAN_LINEAGE_AUTO=0`
+keeps explicit and ambient campaigns and disables only the implicit one.
 
-1. **Explicit** - the caller passes `campaign_id=` to a `db.upsert_*` /
-   `db.copy_replace_*` helper. Highest fidelity, used by the batch scripts.
-2. **Ambient** - the caller wraps its work in `open_campaign(...)`, which binds
-   the campaign to a `ContextVar` for the duration. Every write inside the
-   block picks it up with no callsite change. This is the normal path for a
-   script or asset that knows its own input vintage.
-3. **Implicit** - nothing was bound, so the first write in the process lazily
-   opens a low-fidelity campaign from the environment (writer, code version,
-   run id, host, pid, argv). This exists so a write is NEVER anonymous, even
-   from a path nobody remembered to wire. `input_vintage` is `{}` for an
-   implicit campaign - honest about knowing nothing rather than guessing.
-
-NOTHING HERE MAY EVER FAIL A WRITE. Every public entry point swallows its own
-exceptions and degrades to `None` (= write the row with a NULL campaign_id,
-exactly as before this module existed). Lineage is bookkeeping; a factor row
-landing in gold is the actual job. `MERIDIAN_LINEAGE_DISABLED=1` turns the
-whole thing off, and `MERIDIAN_LINEAGE_AUTO=0` keeps explicit/ambient campaigns
-but disables the implicit fallback.
-
-INPUT VINTAGE
--------------
-`input_vintage` is the load-bearing field and the one that is easy to get
-wrong. It is stored as **jsonb keyed by source dataset**, not as a scalar:
+`input_vintage` is jsonb keyed by source dataset:
 
     {
       "ohlcv.prices": {"max_inserted_at": "2026-07-31T23:04:11+00:00",
@@ -56,22 +35,16 @@ wrong. It is stored as **jsonb keyed by source dataset**, not as a scalar:
       "factors.daily_scores": {"campaigns": [412, 413]}
     }
 
-A campaign consumes several upstream datasets with independent vintages, so no
-single scalar is a truthful summary of what it read - collapsing them hides
-which input was stale. The jsonb also records the READER
-("medallion:silver" vs "flat-parquet" vs "postgresql"), because a silent
-read-path fallback is invisible in the values.
+A campaign reads several datasets with independent vintages, and a single scalar would hide
+which one was stale. The reader is recorded too ("medallion:silver", "flat-parquet",
+"postgresql"), because a silent fallback between read paths does not show in the values. The
+incident asked "which scores were computed from OHLCV read before the adj_close fix landed", so
+the writer also derives a scalar `input_vintage_max timestamptz`, the latest parseable timestamp
+anywhere in the jsonb. `WHERE input_vintage_max < '2026-08-01'` then works and is B-tree
+indexable. `vintage_scalar()` computes it at write time from the same jsonb, so the two agree.
 
-For the ergonomic query the incident actually needs - "which scores were
-computed from OHLCV read before the adj_close fix landed" - the writer ALSO
-derives a scalar `input_vintage_max timestamptz` (the max parseable timestamp
-anywhere in the jsonb). That makes the one-line `WHERE input_vintage_max <
-'2026-08-01'` possible and B-tree indexable, while the jsonb keeps the
-per-source detail the scalar throws away. The scalar is computed by
-`vintage_scalar()` at write time so the two can never disagree.
-
-Use `source_vintage()` to build one source's entry and `merge_vintages()` to
-combine them; both are pure and unit-tested.
+`source_vintage()` builds one source's entry and `merge_vintages()` combines entries. Both are
+pure and unit tested.
 """
 
 import contextlib
@@ -86,17 +59,10 @@ from typing import Any, Optional
 
 _log = logging.getLogger(__name__)
 
-# ─────────────────────────────────────────────
-# Constants
-# ─────────────────────────────────────────────
-
-#: Sentinel campaign for every row written BEFORE lineage existed. The
-#: migration adds `campaign_id bigint DEFAULT 0` and then drops the default, so
-#: all pre-existing rows read back as 0 with no table rewrite (see
-#: dagster/db/migrations/2026-08-02_write_campaigns.sql). "Unknown provenance"
-#: is therefore a first-class, queryable state rather than an absence. Real
-#: provenance for those rows is NOT recoverable and no attempt is made to
-#: reconstruct it.
+# Campaign id for every row written before lineage existed. The migration adds `campaign_id
+# bigint DEFAULT 0` and drops the default, so old rows read back as 0 without a table rewrite
+# (dagster/db/migrations/2026-08-02_write_campaigns.sql). Their real provenance cannot be
+# recovered, and 0 at least makes "unknown" something you can query for.
 PRE_LINEAGE_CAMPAIGN_ID = 0
 
 WRITER_DAGSTER_ASSET = "dagster_asset"
@@ -104,8 +70,8 @@ WRITER_BURST_PROMOTE = "burst_promote"
 WRITER_MANUAL_SCRIPT = "manual_script"
 WRITER_PRE_LINEAGE = "pre_lineage"
 
-#: Named results a campaign's admission gate can record. Free-form text is
-#: allowed (the column is `text`); these are the values the shipped writers use.
+# Results a campaign's admission gate can record. The column is free text; these are the values
+# the shipped writers use.
 GATE_PASS = "pass"
 GATE_FAIL = "fail"
 GATE_FORCED = "forced"
@@ -113,9 +79,7 @@ GATE_UNVERIFIED = "unverified"
 GATE_ABORTED = "aborted"
 
 
-# ─────────────────────────────────────────────
 # Environment / kill switches
-# ─────────────────────────────────────────────
 
 
 def _truthy(value: Optional[str]) -> bool:
@@ -150,7 +114,7 @@ def resolve_code_version() -> str:
 
     Order: MERIDIAN_CODE_VERSION (set it explicitly if you care) -> the image
     tag the k3s deployment was rolled with -> the installed/declared package
-    version -> "unknown". Deliberately NOT a git call: run pods have no git
+    version -> "unknown". NOT a git call: run pods have no git
     checkout, and shelling out on a hot path to learn something the image
     already knows is the wrong trade.
     """
@@ -214,9 +178,7 @@ def _process_detail() -> dict:
     return detail
 
 
-# ─────────────────────────────────────────────
 # input_vintage construction (pure helpers)
-# ─────────────────────────────────────────────
 
 
 def _iso(value: Any) -> Any:
@@ -271,8 +233,8 @@ def input_campaign_manifest(rows: Any) -> dict:
     """Exact, fail-closed manifest of campaign stamps in a derived input frame.
 
     Derived writers attach this payload under their source-table key in
-    ``input_vintage``.  ``campaigns`` alone is deliberately insufficient: an
-    the downstream execution consumer hard gate must also see whether any consumed row was NULL-stamped or
+    ``input_vintage``.  ``campaigns`` alone is insufficient: a
+    downstream hard gate must also see whether any consumed row was NULL-stamped or
     pre-lineage (0), because either makes the input set non-auditable.
     """
     try:
@@ -358,9 +320,7 @@ def vintage_scalar(vintage: Optional[dict]) -> Optional[_dt.datetime]:
     return best
 
 
-# ─────────────────────────────────────────────
 # The ambient campaign
-# ─────────────────────────────────────────────
 
 
 @dataclass
@@ -450,7 +410,7 @@ def _engine_key(engine) -> str:
 def _implicit_campaign_id(engine) -> Optional[int]:
     """Mint (once per process+engine) the low-fidelity fallback campaign.
 
-    Deliberately records NO input_vintage: a path that never told us what it
+    Records NO input_vintage: a path that never told us what it
     read gets an empty jsonb, not a guess. The value here is `writer` +
     `code_version` + `run_id` + the process fingerprint, which is already
     strictly more than the zero bits a pre-#294 row carried.
@@ -494,7 +454,7 @@ def _register_implicit_close(engine, campaign_id: int) -> None:
     completed one from a crashed one, and a reader scanning the open rows had
     no way to know whether to be alarmed.
 
-    Registering at exit rather than after each write is deliberate. It keeps the
+    Registering at exit rather than after each write is on purpose. It keeps the
     one-row-per-process shape (the whole point of memoising), and it makes
     `finished_at IS NULL` MEAN something afterwards: the process died before it
     could close, since atexit does not run on SIGKILL or a hard OOM. An

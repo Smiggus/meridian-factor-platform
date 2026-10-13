@@ -37,7 +37,7 @@ def test_driver_exposes_discover_from_flag():
         "pipes_dask_driver.py must expose --discover-from; without it a burst fill "
         "cannot target a range gold has no rows for."
     )
-    # Both choices must be selectable, not just documented.
+    # Both choices must be selectable; documenting them is not enough.
     assert '"gold"' in _DRIVER_SRC and '"calendar"' in _DRIVER_SRC
 
 

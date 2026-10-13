@@ -1,13 +1,11 @@
-"""
-asset_selections.py - SHOWCASE STUB.
+"""AssetSelection groupings shared by the jobs and sensors.
 
-Canonical AssetSelection groupings shared by the schedules and sensors. The
-private repository lists every factor asset of the program here; the stub
-lists the generic ones the shipped sensors and jobs need.
+This is a minimal placeholder: it lists only the asset keys the jobs and
+sensors in this copy refer to.
 
-Two-phase split: CORE assets are CPU-only and parallelise freely across
-partitions; the GPU/composite phase is serialised by a cluster-wide GPU pool
-cap and runs once all CORE assets have landed for the same partition.
+The daily run is split in two. The core assets are CPU-only and run in parallel
+across partitions. The GPU and composite phase is serialised by a cluster-wide
+GPU pool cap and starts once every core asset has landed for the same partition.
 """
 
 from __future__ import annotations

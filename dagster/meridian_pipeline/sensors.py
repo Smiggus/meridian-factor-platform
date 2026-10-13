@@ -1,71 +1,20 @@
-"""
-sensors.py - Dagster sensors for Meridian factor scoring.
+"""Dagster sensors for the daily scoring run, the mirrors and alerting.
 
-This export ships eleven of the sensors (the list below names the ones that
-drive the daily two-phase run; see each section's own comment banner for the
-rest):
+The daily run has two phases. `watermark_complete_sensor` starts phase 1 (the CORE factor
+assets) when LDP's completion watermark marks a trade date complete. It replaced a cron schedule
+at 17:00 ET that fired before the watermark cleared whenever ingest ran late.
+`stale_factor_sensor` is the backstop for it, `request_sensor` handles dates requested through
+the API, and `ldp_ohlcv_upstream_sensor` is an older trigger left registered and stopped.
+`core_complete_sensor` starts phase 2 (the GPU and composite assets) once phase 1 lands for a
+recent partition.
 
-0. watermark_complete_sensor - PRIMARY trigger for daily phase-1 scoring
-   (Meridian #286, 2026-08-18). Polls LDP's completion watermark
-   (ohlcv.ingest_watermark) every 5 minutes and fires phase 1
-   (CORE_FACTOR_ASSETS) the moment a trade_date is actually marked
-   complete. Replaces the old `daily_factor_scoring` cron schedule
-   (removed from schedules.py), which fired at a fixed 17:00 ET sized
-   against an expected LDP finish time, which fires before the date's
-   watermark clears whenever ingest runs late and then fails
-   assert_cross_section_single_dated's guard. See the sensor's own
-   docstring for the full cutover rationale and cursor design.
+The rest are `ntfy_run_failure_sensor` and `asset_check_alert_sensor` for alerts,
+`composite_cache_warm_sensor` for evicting stale API cache entries, `iceberg_gold_sync_sensor`
+for the Iceberg gold sync, `checked_score_mirror_sensor` for the mirror reconcile job and
+`backfill_completion_sensor` for the sweep that follows a finished backfill.
 
-1. stale_factor_sensor - Runs every 30 minutes. Safety net for
-   watermark_complete_sensor: if no rows exist in factors.daily_scores for
-   the latest ET trading day AND db.trigger_cross_section_ready says the
-   date is ready (Meridian #395: watermark-first, falling back to the same
-   coverage-ratio predicate the write-side guard applies rather than
-   assuming ready whenever the watermark has no row yet), fires phase 1
-   (CORE_FACTOR_ASSETS). Phase 2 then auto-fires via core_complete_sensor.
-
-2. request_sensor - Runs every 30 seconds. Polls factors.compute_requests
-   for pending dates (submitted by the API when a consumer requests a date
-   that isn't in the DB). Triggers phase 1 (CORE) for each pending date;
-   phase 2 follows via core_complete_sensor when phase 1 lands.
-   Flow: GET /scores?date=X -> API writes to compute_requests -> sensor fires
-   phase 1 -> core_complete_sensor fires phase 2 -> composite lands -> next
-   API retry serves the data.
-
-3. core_complete_sensor - sensor watching all CORE_FACTOR_ASSETS.
-   When all CORE assets have new materialisations for the same partition,
-   fires GPU_COMPOSITE_ASSETS for that partition. Phase-1 to phase-2
-   bridge for LIVE continuity only: a recent (within
-   CORE_COMPLETE_MAX_PARTITION_AGE_DAYS, default 10) phase-1 partition
-   landing auto-fires its phase-2 run (serialised by GPU cap=1). Historical
-   partitions (e.g. a CORE backfill re-scoring old years) are age-gated out
-   and dropped from tracked state without firing - historical phase-2 is
-   launched deliberately via meridian_backfill_job, not this sensor
-   (Meridian #99 follow-up, 2026-07-04/05: two backfill waves each fired a
-   high-priority phase-2 RunRequest per backfilled historical partition,
-   starving the gpu pool).
-
-4. ldp_ohlcv_upstream_sensor - Event-driven cross-code-location sensor.
-   Watches LDP's ohlcv_prices asset materialisations; when fresh upstream
-   OHLCV activity is detected, fires phase-1 CORE_FACTOR_ASSETS for the
-   most recent closed ET trading day. Ships STOPPED in code - see the
-   cutover plan in the sensor's docstring - but a sensor's default_status only
-   seeds its initial state, so it can end up running regardless; it now also consults
-   db.trigger_cross_section_ready before firing, same as stale_factor_sensor.
-
-5. ntfy_run_failure_sensor - Fires on every run transition to FAILURE.
-   POSTs an ntfy alert to the alerts topic. Fail-open: transport
-   errors are logged, never raised.
-5b. asset_check_alert_sensor - Pages the same ntfy topic when an allowlisted
-   asset check (sensors._ALERTED_CHECKS) evaluates failed, including WARN
-   severity on a successful run (Meridian#427). Once per (check, partition).
-6. composite_cache_warm_sensor - Watches composite_scores materialisations.
-   After composite lands for a partition, calls POST /admin/cache/warm?date=X
-   on the Meridian API to evict stale cache entries for that date. This closes
-   the write->serve gap where the API cache would otherwise keep serving old
-   scores until TTL expiry. Fail-soft: HTTP errors are logged and swallowed.
-   Shipped STOPPED; enable via Dagster UI once the API is live.
-
+Each decorator carries the interval, default status and a description of what the sensor does,
+and the longer reasoning is in the sensor's own docstring.
 """
 
 from __future__ import annotations
@@ -177,7 +126,7 @@ _PARTIAL_PARTITION_TTL_SECONDS = 6 * 60 * 60  # 6h
 # core_complete_sensor's job is LIVE phase-2 continuity only: bridging a
 # just-landed phase-1 partition to its phase-2 GPU run within the same
 # evening. Historical phase-2 (re-scoring old partitions during a CORE
-# backfill, e.g. the 2013-2014 rerun) is launched deliberately via
+# backfill, e.g. the 2013-2014 rerun) is launched via
 # meridian_backfill_job's union job selection - it must NOT also be fanned
 # out per-partition by this sensor. Two backfill waves (66, then 100+ runs)
 # each serialised their own GPU RunRequest for every backfilled historical
@@ -239,7 +188,7 @@ def _run_covers_core(instance, run_id: str, core_set: set[str], cache: dict[str,
     runs are skipped here; the TTL GC is the backstop, this is the guard at the
     source.
 
-    Deliberately conservative - it must NEVER block a legitimate phase-1 run
+    Conservative - it must NEVER block a legitimate phase-1 run
     from firing phase 2 (that was the #99 outage). asset_selection is None for a
     whole-job run (the daily schedule and the union backfill job, verified in
     prod) and an empty frozenset for some in-process paths; both are treated as
@@ -326,15 +275,12 @@ def _get_engine():
     return _ENGINE
 
 
-# ─────────────────────────────────────────────
 # Cross-sensor partition dedup (Meridian #358)
-# ─────────────────────────────────────────────
-
 # Statuses that count as "a run for this partition is already in flight".
 # NOT_STARTED is included alongside the QUEUED/STARTING/STARTED trio because
 # a run another sensor's RunRequest just created can sit briefly before the
 # run queue daemon picks it up - excluding it would leave that window
-# uncovered. SUCCESS/FAILURE/CANCELED are deliberately excluded: a date that
+# uncovered. SUCCESS/FAILURE/CANCELED are excluded: a date that
 # failed or finished once must still be retriable by a later tick.
 _PARTITION_IN_FLIGHT_STATUSES = [
     DagsterRunStatus.NOT_STARTED,
@@ -360,7 +306,7 @@ def _partition_in_flight(instance, job_name: str, partition_date) -> bool:
     not less. This helper is the shared pre-flight check every
     daily_factor_core_job sensor now calls before yielding a RunRequest.
 
-    Deliberately scoped by job_name with NO sensor-name allowlist, unlike
+    Scoped by job_name with NO sensor-name allowlist, unlike
     _sensor_run_in_flight below. #358's failure mode is sensors that are not
     on each other's radar racing over the same job - a check keyed to a
     named list of sensors would require every future sensor added to
@@ -400,10 +346,7 @@ def _partition_in_flight(instance, job_name: str, partition_date) -> bool:
     return len(runs) > 0
 
 
-# ─────────────────────────────────────────────
 # Watermark-driven daily scoring trigger (Meridian #286)
-# ─────────────────────────────────────────────
-
 # Per-tick cap on newly-complete trade_dates pulled from the watermark. LDP
 # marks at most one date complete per ordinary night; a generous cap absorbs
 # a multi-day catch-up (e.g. the watermark itself was down for a stretch, or
@@ -417,9 +360,8 @@ _WATERMARK_MAX_DATES_PER_TICK = 30
     default_status=DefaultSensorStatus.RUNNING,
     description=(
         "PRIMARY trigger for daily phase-1 factor scoring (Meridian #286), "
-        "replacing the daily_factor_scoring cron schedule (removed from "
-        "schedules.py - see its module docstring for the incident this "
-        "closes). That schedule fired at a fixed wall-clock time, sized "
+        "replacing the daily_factor_scoring cron schedule. "
+        "That schedule fired at a fixed wall-clock time, sized "
         "against an expected LDP finish time, so whenever the nightly ingest "
         "ran late the cron fired before "
         "ohlcv.ingest_watermark marked the date complete and "
@@ -622,9 +564,7 @@ def _queue_due(entry: dict, now: datetime) -> bool:
         return True
 
 
-# ─────────────────────────────────────────────
 # Stale factor sensor
-# ─────────────────────────────────────────────
 
 
 @sensor(
@@ -714,8 +654,7 @@ def stale_factor_sensor(context: SensorEvaluationContext):
     # High priority + numeric 50: mirrors watermark_complete_sensor. This
     # sensor is the safety net for the primary trigger, so it must preempt
     # backfill (priority 0) on the gpu pool. Without the bump, the backstop
-    # sits behind the same queue that already starved the old schedule (see
-    # schedules.py's module docstring for that history).
+    # sits behind the same queue that already starved the old cron schedule.
     yield RunRequest(
         run_key=f"stale_{target_date}",
         partition_key=str(target_date),
@@ -723,9 +662,7 @@ def stale_factor_sensor(context: SensorEvaluationContext):
     )
 
 
-# ─────────────────────────────────────────────
 # API request sensor
-# ─────────────────────────────────────────────
 
 
 @sensor(
@@ -786,9 +723,7 @@ def request_sensor(context: SensorEvaluationContext):
         )
 
 
-# ─────────────────────────────────────────────
 # Phase-1 → Phase-2 bridge sensor
-# ─────────────────────────────────────────────
 
 
 @sensor(
@@ -842,7 +777,7 @@ def core_complete_sensor(context: SensorEvaluationContext):
     Before firing, any tracked partition older than
     CORE_COMPLETE_MAX_PARTITION_AGE_DAYS is dropped without a RunRequest -
     this sensor is LIVE-continuity only; historical phase-2 is launched
-    deliberately via meridian_backfill_job (see _partition_age_days).
+    via meridian_backfill_job (see _partition_age_days).
     """
     cursor = json.loads(context.cursor) if context.cursor else {}
     # Per-asset forward cursors. Stored as OPAQUE STRINGS as returned by
@@ -1098,11 +1033,9 @@ def ntfy_run_failure_sensor(context: RunFailureSensorContext) -> None:
     )
 
 
-# ─────────────────────────────────────────────
 # Asset-check alert sensor (Meridian#427)
-# ─────────────────────────────────────────────
 #
-# Why #427 exists: a staleness check can be deliberately WARN-and-write, so
+# Why #427 exists: a staleness check can be WARN-and-write by design, so
 # the run SUCCEEDS and ntfy_run_failure_sensor (which only fires on run
 # FAILURE) never sees it. This sensor closes
 # that class: it reads asset-check evaluations for a short explicit allowlist
@@ -1282,10 +1215,7 @@ def asset_check_alert_sensor(context: SensorEvaluationContext):
         context.log.info(f"asset_check_alert_sensor: paged {pages_sent} new (check, partition)")
 
 
-# ─────────────────────────────────────────────
 # LDP upstream OHLCV sensor
-# ─────────────────────────────────────────────
-
 # LDP's ohlcv_prices asset is ticker-partitioned (one partition per ticker).
 # Meridian's CORE assets are date-partitioned. There is NO 1:1 partition map.
 # The sensor strategy: when ANY new ohlcv_prices materialisation is seen
@@ -1582,10 +1512,7 @@ def _call_warm_api(context: SensorEvaluationContext, date_str: str) -> None:
         )
 
 
-# ─────────────────────────────────────────────
 # Iceberg gold -> PG promotion sensor (Meridian#265)
-# ─────────────────────────────────────────────
-
 # Targets the named gold_pg_sync_job. That job lives in jobs.py, not
 # definitions.py, precisely so this module can import it without the cycle
 # definitions.py would create (definitions.py imports sensors.py). Same job
@@ -1828,10 +1755,7 @@ def iceberg_gold_sync_sensor(context: SensorEvaluationContext):
     _save()
 
 
-# ─────────────────────────────────────────────
 # Meridian #285 Tier 3: backfill-completion sensor
-# ─────────────────────────────────────────────
-
 # Max processed backfill ids retained in the cursor. This is the HARD bound
 # the #99 post-mortem demands: core_complete_sensor wedged because its cursor
 # state grew without a ceiling and its bootstrap was all-or-nothing, which
@@ -1902,7 +1826,7 @@ def _backfill_partition_names(context, backfill) -> list[str] | None:
             return None
         asset_backfill_data = backfill.get_asset_backfill_data(repo_def.asset_graph)
         names = asset_backfill_data.get_partition_names()
-    except Exception:  # noqa: BLE001 - deliberately total, see docstring
+    except Exception:  # noqa: BLE001 - total, see docstring
         return None
     return list(names) if names else None
 
@@ -2014,8 +1938,8 @@ def backfill_completion_sensor(context: SensorEvaluationContext):
         # watermark WITHOUT firing. Without this, enabling the sensor emits
         # one verification run per historical backfill on the instance.
         #
-        # The ids seen at seed time are recorded too, not just the timestamp:
-        # the watermark comparison below is deliberately STRICT (`ts <`) so
+        # The ids seen at seed time are recorded too, alongside the timestamp:
+        # the watermark comparison below is STRICT (`ts <`) so
         # that backfills sharing a timestamp with the newest processed one are
         # not silently dropped, which means the newest backfill at seed time
         # would otherwise sail through the watermark on the very next tick and

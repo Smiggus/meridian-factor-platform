@@ -1,155 +1,51 @@
-# Architecture notes
+# Architecture
 
-How the shipped pieces fit together. File names are relative to the repo root.
+Two things run from this code. A Dagster code location on k3s computes factor scores and writes them to PostgreSQL, and a small FastAPI service reads them back out. Paths below are relative to the repo root. Some comments and docstrings refer to modules that are not in this copy, `assets.py` for one; the research and the asset bodies stayed in the private repository.
 
-```mermaid
-flowchart LR
-    subgraph upstream["Upstream data platform"]
-        WM["ingest watermark<br/>+ OHLCV tape"]
-    end
-    subgraph cluster["Dagster code location"]
-        SENS["sensors.py<br/>watermark_complete / stale_factor / request"]
-        GATE["db.py readiness gates<br/>cross_section_ready, single-dated check"]
-        ASSETS["factor assets<br/>(withheld; stand-ins here)"]
-        WRITE["db.py write path<br/>upsert_daily_scores / copy_replace"]
-        SENS --> GATE --> ASSETS --> WRITE
-    end
-    subgraph stores["Stores"]
-        PG[("PostgreSQL gold<br/>factors.*")]
-        ICE[("Iceberg mirror")]
-        PQ[("Parquet mirror")]
-    end
-    subgraph burst["Burst box"]
-        DRV["pipes_dask_driver.py"]
-        STG[("object-store staging prefix")]
-        DRV --> STG
-    end
-    API["api/ (read-only)"]
-    WM --> SENS
-    WRITE --> PG
-    WRITE -. best effort .-> ICE
-    WRITE -. best effort .-> PQ
-    STG --> PRO["promote_backfill.py<br/>hole check, scope check, parity"]
-    PRO --> WRITE
-    PG --> API
-```
+## Writing scores
 
-## 1. The write path (`dagster/meridian_pipeline/db.py`)
+Everything that lands in `factors.daily_scores` goes through `dagster/meridian_pipeline/db.py`. The daily assets call `upsert_daily_scores`. The burst promote calls `copy_replace_daily_scores`, which does the same job with a bulk `COPY`. A third pair, `stage_daily_scores_rows` and `apply_staged_daily_scores`, splits a write into a stage step and an apply step, and the apply is the part that runs under the lock.
 
-Everything that lands in `factors.daily_scores` goes through one of three
-functions: `upsert_daily_scores` (row-oriented, the daily assets),
-`copy_replace_daily_scores` (bulk `COPY`, the burst promote) and
-`stage_daily_scores_rows` / `apply_staged_daily_scores` (stage first, apply
-under the lock). They share these rules:
+A write is delete and reinsert in one transaction, per `(score_date, factor_name)`. If the universe shrank since the last run, the rows for the dropped tickers are deleted along with the rest instead of lingering. What counts as "the rest" is whatever the caller passes as `owned_factors`; the delete never reaches wider than that, in any group. This makes one mistake expensive. An owned factor that is missing from the payload gets deleted and never replaced, so such a write is refused unless the caller opts out. Batch promoters do opt out, since they hold one scope across many partitions. A write that declares a `replace_date_range` is also compared with the trading calendar, and a missing interior date is an error unless the caller says the gap is intended.
 
-- **Scoped delete-replace.** A rerun deletes the rows it owns for each
-  `(score_date, factor_name)` and re-inserts, in one transaction, so a universe
-  that shrank leaves no orphans. `owned_factors` declares the exact set a caller
-  owns; the delete is scoped to those names across every group, never wider.
-- **Refusing a silent hole.** The delete runs before the insert, so an owned
-  factor with no rows in the payload would be deleted without replacement. The
-  default is to refuse that write; batch promoters that hold one scope across
-  many partitions opt out explicitly. For a declared `replace_date_range`, the
-  payload is compared with the real trading calendar and a missing interior date
-  is refused unless the caller says the empty date is intended.
-- **Advisory locks.** Each write takes a shared lock on the table's range key
-  and an exclusive lock per score date, always range key first and dates
-  ascending, so the lock graph is acyclic. The number of dates per transaction is
-  bounded (each lock occupies a slot in the shared lock table) and the wait is
-  bounded by a configurable `lock_timeout`.
-- **Schema bootstrap with deadlock retry.** `ensure_schema` is idempotent DDL
-  that many run pods may issue at once; it retries on deadlock with backoff.
-- **No future dates, NaN to NULL.** `assert_score_date_not_future` and the NaN
-  normalisation exist because both failure modes are silent.
-- **Best-effort mirrors.** After the PostgreSQL commit the rows are mirrored to
-  Parquet and Iceberg. PostgreSQL is authoritative and the mirrors never raise;
-  the burst promote checks the mirror is ready once up front instead.
+Each write takes a shared advisory lock on the table's range key and then an exclusive lock per score date, in ascending order. The fixed order keeps the lock graph free of cycles. Every advisory lock uses a slot in the shared lock table, which is why the number of dates per transaction is capped, and waits are bounded by `lock_timeout`. `ensure_schema` is idempotent DDL that several run pods may issue at once, so it retries on deadlock with backoff.
 
-### Lineage
+Once PostgreSQL has committed, the rows are mirrored to Parquet and Iceberg. That step is best effort. PostgreSQL is the authority and the mirror code swallows its own errors.
 
-`lineage.py` and `db.record_write_campaign` / `finish_write_campaign` stamp a
-`campaign_id` on every row. The invariant that governs the code is that lineage
-is additive: a capability probe returns false until the migration is applied, and
-until then every writer emits SQL byte-identical to its pre-lineage form. Only a
-*successful* probe is cached, and a probe error is re-raised rather than letting
-a writer re-insert unstamped rows.
+`lineage.py` (#294) stamps a `campaign_id` on each row. The migration may not be applied yet, so a capability probe asks whether the column exists, and when it does not the writers emit the SQL they used before lineage. A successful probe is cached. A probe that errors is re-raised, because falling back on an error would let a writer insert unstamped rows with nobody noticing.
 
-## 2. Readiness gates
+## Deciding a date is ready
 
-`cross_section_ready` and `trigger_cross_section_ready` decide whether a date may
-be scored: watermark first (the upstream platform marks a trade date complete),
-falling back to a coverage-ratio predicate against the trailing median.
-`assert_cross_section_single_dated` refuses a cross-section that silently mixes
-as-of dates, which is what a read during an upstream rewrite looks like.
-`assert_universe_coverage` guards the size of the scored universe.
+`cross_section_ready` and `trigger_cross_section_ready` say whether a date may be scored. Both look at the upstream watermark and fall back to a coverage ratio against the trailing median. `assert_cross_section_single_dated` refuses a cross-section that mixes as-of dates, and `assert_universe_coverage` checks the size of the universe.
 
-## 3. Hygiene and checks
+## Price and return guards
 
-- `ohlcv_hygiene.py`: a floor on bogus or illiquid prints, a delisting guard and
-  a staleness fallback for tickers that stopped printing.
-- `adj_close_guard.py`: a same-row ratio test that catches one poisoned
-  `adj_close` which finite-value gates pass straight through.
-- `splice_guard.py`: protection against ticker-symbol reuse blending two
-  companies into one rolling window.
-- `checks/ohlcv_contract_checks.py`: the one *blocking* check, a read-boundary
-  contract on the price tape. `checks/ret1d_checks.py` is a tripwire for
-  upstream `ret_1d` corruption. `checks/trading_day_checks.py` sweeps every
-  scored table for non-trading dates, because a writer that derives its partition
-  set from gold reproduces whatever junk dates gold already carries.
-- `checks/alerting.py` and `notify.py`: failed checks page once per (check,
-  partition); the transport is fail-open and refuses to send under pytest.
+`ohlcv_hygiene.py` puts a floor under bogus and illiquid prints and handles delistings. `adj_close_guard.py` compares `adj_close` with `close` on the same row, which catches a single poisoned value that range checks miss. `splice_guard.py` keeps a reused ticker from blending two companies into one rolling window.
 
-## 4. Burst ship-back (`scripts/burst/`)
+The asset checks are in `checks/`. Two of them block, and both are attached to `momentum_scores`: `check_ohlcv_read_contract` guards the OHLCV read contract, and `check_ret1d_input_quality` (`ret1d_checks.py`) is a tripwire for corrupt upstream `ret_1d`. They run once momentum has computed. Because they block, a failure stops the composite from consuming that day. Each one downgrades violations to WARN for early history (dates before 2015 for the ret_1d check, before 2004 for the contract check), so old vendor quirks do not stall a historical backfill.
 
-Three planes: Dagster on the cluster (control), Dagster Pipes over object storage
-(bridge), Dask on a burst box (compute).
+The remaining checks do not block. `trading_day_checks.py` sweeps every scored table for non-trading dates; this exists because a writer that takes its partitions from gold reproduces whatever junk dates gold already has. A failing check wrapped with `@alerting_check` sends one ntfy alert per check and partition through `checks/alerting.py` and `notify.py`. In this tree that is `check_trading_day_invariant` only.
 
-1. `pipes_dask_driver.py` fans partitions out to workers, which write score
-   parquet to a **staging prefix**. The box never writes gold.
-2. Per-partition sentinels make a crashed run resumable with the same run id.
-3. `promote_backfill.py` (control plane) refuses to promote unless: the owned
-   scope in the run manifest agrees with the staged payload in both directions;
-   every date the kernel undertook is present (hole check); live-only factors
-   that cannot be reproduced for a historical date are carried out of the delete
-   scope; coverage does not regress. It then delete-replaces through
-   `copy_replace_daily_scores` and re-reads a sample (always including the last
-   partition) to prove gold equals the staged rows.
-4. `verify_promoted_range.py` independently certifies a promoted range against
-   the staged payload without reading the promote's own campaign rows.
-5. `promote_replay_out.py` does the same for replayed output under one explicit
-   campaign, and refuses an incomplete box run (manifest, directory listing and
-   per-date row counts must agree exactly).
+## Burst backfills
 
-`ingest_window.py` is a pure-stdlib preflight that refuses to start a campaign
-while the upstream nightly ingest is running.
+A backfill too large for the cluster runs on a separate machine. `burst_backfill.py` holds a parked Dagster asset that opens a Pipes session, with context and messages travelling through a MinIO prefix, so the machine needs no inbound port. Until that asset is registered, `pipes_dask_driver.py` runs standalone and behaves the same without an orchestrator. The driver fans partitions out over a local Dask cluster. Workers write score parquet under a staging prefix, and each partition leaves a sentinel so a crashed run resumes where it stopped.
 
-## 5. Lakehouse and mirrors
+`promote_backfill.py` runs on the cluster and is a series of gates in front of one write. The owned scope in the run manifest is compared with the staged payload in both directions, with the payload read from a sample of dates. A date the kernel undertook that is missing from the staged files stops the promote, and so does a coverage regression against gold, again judged on a sample. A live-only factor, one that cannot be reproduced for a historical date, aborts the promote unless the operator retains its gold rows or allows its erasure by name (#380). The coverage, hole and erasure gates each have their own named override (`--force-coverage`, `--allow-incomplete`, `--allow-erasure`), and one override does not silence another. The write is a delete-replace through `copy_replace_daily_scores`. Afterwards the script rereads a sample of partitions, always including the last, and compares gold with the staged rows to a small tolerance.
 
-- `lakehouse.py`: Iceberg warehouse access through pyiceberg with an OIDC bearer,
-  month-partitioned delete-replace writes with commit retry.
-- `parquet_io.py`: a DuckDB read path over Parquet / Iceberg with a PostgreSQL
-  fallback, recency-first duplicate-key precedence, and the OHLCV read contract.
-- `checked_mirror.py` + `mirror_digest.py`: a PostgreSQL to Iceberg mirror that
-  compares an exact, order-independent per-date content digest on both sides
-  (never sums of values) and fails closed.
-- `lakehouse_parity.py`: cheap per-date aggregate parity monitor.
-- `gold_pg_sync_asset.py`: one-way, scoped promotion of a finalised Iceberg batch
-  into PostgreSQL.
+Three smaller scripts sit around it. `verify_promoted_range.py` checks a promoted range against the staged payload without reading the promote's own campaign rows. `promote_replay_out.py` upserts replayed output from the separate machine under one named campaign and refuses an incomplete run: the manifest, the directory listing and the per-date row counts have to agree exactly. `ingest_window.py` is a stdlib-only preflight that will not start a campaign while the upstream nightly ingest is running.
 
-## 6. Sensors
+## Lakehouse and mirrors
 
-`sensors.py` ships the sensors that drive and watch the daily two-phase run:
-`watermark_complete_sensor` (primary trigger), `stale_factor_sensor` (safety net),
-`request_sensor` (API-submitted dates), `core_complete_sensor` (phase-1 to
-phase-2 bridge with an age gate and a JSON cursor; deliberately not a
-`multi_asset_sensor`, whose event cap deadlocks partial-completion patterns),
-`ldp_ohlcv_upstream_sensor`, `composite_cache_warm_sensor`,
-`iceberg_gold_sync_sensor`, `backfill_completion_sensor`, `asset_check_alert_sensor`,
-`ntfy_run_failure_sensor` and `checked_score_mirror_sensor`.
+`lakehouse.py` reaches the Iceberg warehouse through pyiceberg with an OIDC bearer token. `parquet_io.py` reads through DuckDB over Parquet or Iceberg, falls back to PostgreSQL, keeps the latest row when keys repeat, and holds the OHLCV read contract.
 
-## 7. Read API
+`checked_mirror.py` and `mirror_digest.py` copy PostgreSQL into Iceberg and compare a per-date content digest on both sides. The digest covers every column and ignores row order, and a mismatch fails the mirror. `lakehouse_parity.py` is a cheaper monitor that compares aggregates. `gold_pg_sync_asset.py` runs the other direction and promotes a finalised Iceberg batch into PostgreSQL within a declared scope.
 
-`api/main.py` mounts four routers. Routes are authenticated except `/health`;
-cache control needs an admin token. The response contract is frozen: fields are
-added, never renamed or dropped. `api/cache.py` is a TTL cache with a size bound
-(`API_SCORE_CACHE_MAX_ENTRIES`) and per-date eviction for the cache-warm route.
+## Sensors
+
+`sensors.py` drives the daily two-phase run. `watermark_complete_sensor` is the main trigger, `stale_factor_sensor` a backstop, and `request_sensor` picks up dates written to the `factors.compute_requests` table (`db.submit_request` inserts them); nothing in this tree calls it. `core_complete_sensor` joins phase 1 to phase 2 with an age gate and a JSON cursor. It is a plain `@sensor` because `multi_asset_sensor` has a 25-event cap that deadlocks on partial-completion patterns. The rest handle the upstream feed, cache warming, the Iceberg gold sync, backfill completion and alerts.
+
+## API
+
+`api/main.py` mounts four routers. Every route except `/health` needs a token, and the response contract is frozen. The two cache routes depend on `require_admin`, which wants an admin claim or a listed subject once `MERIDIAN_ADMIN_SUBJECTS` is set. Before that any authenticated caller can use them and a warning is logged.
+
+`api/cache.py` is a TTL cache bounded by `API_SCORE_CACHE_MAX_ENTRIES`. It has no per-date eviction. The cache-warm route in `api/routers/admin.py` takes the cache's lock and deletes every key containing the date, which means it reaches into the cache's internals. The cache is per process, so each uvicorn worker has its own copy.

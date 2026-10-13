@@ -1,55 +1,26 @@
-"""
-splice_guard.py
-----------------
-Interim ticker-reuse ("splice") guard for rolling/lookback window
-computations that are partitioned by ticker SYMBOL rather than by company.
+"""Guard against ticker reuse in rolling-window computations.
 
-BACKGROUND: ticker symbols get reused. When a delisted company's symbol is
-later reused by an unrelated company (a symbol last traded decades earlier,
-with a gap of thousands of calendar days), any window
-computation partitioned only by `ticker` can span straight across the gap and
-silently blend two different companies' return/price series into one number.
-After LDP's CRSP delisted-tape ingest, a ticker can map to more than one
-entity_id and carry a coverage gap > 365 calendar days - meaning rolling
-windows for such names can span straight across the gap and blend two
-companies' returns into one factor value.
+Ticker symbols get reused. When a delisted company's symbol is later taken by an unrelated one,
+years after the first stopped trading, a window computed per `ticker` can run straight across
+the gap and mix two companies' returns into one number. Since LDP's CRSP delisted-tape ingest, a
+ticker can map to more than one entity_id and carry a coverage gap of more than 365 calendar
+days.
 
-UPDATE: LDP #189 shipped entity_id into the OHLCV gold/parquet
-export. entity_id is now the PRIMARY guard - the fetch queries in assets.py
-(_compute_momentum_pl's caller), risk_factor_scores_asset.py, and
-risk_metrics_asset.py resolve each ticker's CURRENT entity_id (the entity_id
-of its own most recent row as of score_date) and restrict the fetch to rows
-matching that entity_id, so an old, unrelated company's rows for a reused
-ticker symbol never reach the rolling window at all. This module's date-gap
-guard is now the SECONDARY / fallback layer: a small share of ohlcv.prices rows
-have a NULL entity_id and cannot be filtered
-this way, so those tickers fall through to the date-gap heuristic below. The
-guard also remains cheap, independent defense-in-depth for entity_id data
-quality issues generally, not just the NULL case.
+The main defence is upstream of this module. LDP now exports entity_id with the OHLCV data (LDP
+#189). The price fetch queries resolve each ticker's current entity_id, the one on its most
+recent row as of score_date, and drop rows that belong to any other entity, so the earlier
+company never reaches the window. This module covers what that filter cannot: the small share of
+`ohlcv.prices` rows with a NULL entity_id, and any other entity_id quality problem.
 
-THRESHOLD: MAX_INTERNAL_GAP_DAYS = 120 calendar days.
+It does so with a date-gap test. If two consecutive observations of a ticker are more than
+MAX_INTERNAL_GAP_DAYS (120) calendar days apart, any window that spans them is invalid and its
+aggregate is set to NULL or NaN. Holidays and even a trading halt of a few weeks stay well under
+120 days, while a real splice is over 365. The threshold sits at 120 so that a multi-month
+suspension is dropped as well. A missing factor is handled downstream, because the composite is
+a weighted nanmean, and a wrong one is not, so the guard errs toward NULL.
 
-Any two chronologically consecutive observations for the same ticker that
-are more than 120 calendar days apart invalidate any window spanning across
-them - the affected aggregate is set to NULL/NaN rather than a blended
-number. Justification:
-  - A continuously-traded name has a ret_1d row on (almost) every trading
-    day; ordinary weekends/holidays never produce a gap anywhere near this
-    size, and even an unusually long single trading halt (a few weeks) stays
-    well under 120 days.
-  - A genuine ticker-reuse splice is unambiguous at > 365 calendar days
-    (the reused symbol resumes years later - years of dormancy, not weeks).
-  - 120 days sits with real margin below the 365-day "unambiguous splice"
-    bar, so that shorter, more ambiguous multi-month suspensions also fail
-    toward NULL rather than risk silently blending two return series. Per
-    the design directive: a missing factor is handled downstream (the
-    composite is a weighted nanmean); a wrong factor is not - so this
-    threshold is deliberately conservative in the "when in doubt, NULL"
-    direction rather than tuned to maximize retained coverage.
-
-This module intentionally does not try to be clever about *which* side of
-the gap is "real" - it just refuses to compute the aggregate that would span
-it. Downstream consumers already tolerate NaN/NULL factor values.
+Which side of the gap is the real company is not decided here. Any aggregate that would span the
+gap is simply not computed.
 """
 
 from __future__ import annotations
@@ -143,15 +114,10 @@ def numpy_window_has_gap(
     return flags
 
 
-# ── Segment-start SQL (ATH / 52w-high style unbounded-or-windowed MAX
-#    aggregates that don't go through a pandas/polars panel at all) ────────
-#
-# These aggregates (example_level_a, example_level_b) are computed directly
-# in SQL/DuckDB as MAX(price) GROUP BY ticker with no per-row visibility for
-# a pandas/polars-side gap check. The fix there is a CTE that restricts the
-# MAX to rows on/after the ticker's own most recent internal gap larger than
-# max_gap_days (its "current trading segment"); see the CTE embedded in
-# risk_factor_scores_asset._fetch_ath / _fetch_52w_high and
-# parquet_io.fetch_ath / fetch_52w_high. Kept alongside this constant so the
-# threshold is defined in exactly one place.
+# Segment-start SQL. The aggregates drawdown_all and drawdown_52w are plain
+# MAX(price) GROUP BY ticker in SQL or DuckDB, so there is no pandas or polars frame to run a
+# gap check on. They restrict the MAX to rows on or after the ticker's most recent internal gap
+# larger than max_gap_days, its current trading segment. The CTE is in
+# risk_factor_scores_asset._fetch_ath / _fetch_52w_high and parquet_io.fetch_ath /
+# fetch_52w_high. The threshold is defined here so it exists in one place.
 SEGMENT_GAP_THRESHOLD_DAYS = MAX_INTERNAL_GAP_DAYS

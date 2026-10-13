@@ -1,6 +1,6 @@
 """Tests for the #296 VRAM instrumentation.
 
-The point of these is narrow but load-bearing: `log_vram_peak` runs inside the
+The point of these is narrow but important: `log_vram_peak` runs inside the
 CUDA teardown of two nightly assets, so a bug in it would fail scoring runs to
 report a number nobody is currently reading. It must never raise.
 """

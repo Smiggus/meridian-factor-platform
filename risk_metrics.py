@@ -307,7 +307,7 @@ def _compute_on_the_fly(
     # volume but no return, e.g. a new listing's first bar, still counts).
     # min_obs aligned to vol's own floors at the same window length - the
     # canonical asset has no per-window ADV floor beyond the universe's
-    # "60 daily bars before score_date" gate, so this is a deliberately
+    # "60 daily bars before score_date" gate, so this is a
     # conservative choice for the fallback rather than a literal mirror.
     adv_df = pd.read_sql(
         text("""

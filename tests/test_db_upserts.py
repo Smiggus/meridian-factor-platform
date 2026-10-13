@@ -2,7 +2,7 @@
 Tests for db.upsert_* functions - chunked-executemany pattern.
 
 These three upserts used to do row-by-row INSERTs (~one round-trip per
-row to db.internal). Refactored to chunked-executemany matching the proven
+row to the database). Refactored to chunked-executemany matching the proven
 `risk_metrics_asset._upsert_risk_metrics` idiom. Same `ON CONFLICT
 DO UPDATE` semantics so re-running a backfill still overwrites cleanly.
 (Meridian#432: factors.daily_scores / group_scores no longer use ON CONFLICT or
@@ -389,7 +389,7 @@ def test_owned_factors_deletes_all_owned_even_if_absent_from_df():
     assert len(deletes) == 1
     params = deletes[0]["params"]
     assert "group_name" not in params
-    # owned_factors used for delete, not just df's factors
+    # owned_factors used for delete, which can be wider than df's factors
     assert set(params["factor_names"]) == {"macro_a", "macro_b"}
 
 

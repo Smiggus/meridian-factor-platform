@@ -160,7 +160,7 @@ class _FakeEngine:
 
 class _ExplodingEngine:
     """An engine that raises if touched at all - proves a guard path is a
-    true no-op (no query issued), not just a query whose result is ignored."""
+    true no-op (no query issued), as opposed to a query whose result is ignored."""
 
     def connect(self):
         raise AssertionError("engine.connect() should not have been called")
@@ -533,7 +533,7 @@ def test_unknown_watermark_falls_back_to_statistical_raise():
 
 
 # ---------------------------------------------------------------------------
-# Meridian#413 - trigger-side fallback must require ret_1d, not just bars
+# Meridian#413 - trigger-side fallback must require ret_1d as well as bars
 # ---------------------------------------------------------------------------
 #
 # Background: #395's fallback (_cross_section_present_count_unscoped /
@@ -593,7 +593,7 @@ def test_trailing_coverage_unscoped_requires_non_null_ret1d():
 
 
 def test_write_side_scoped_queries_unchanged_by_413():
-    """The write-side guard's population is deliberately NOT changed by
+    """The write-side guard's population is NOT changed by
     #413 - see trigger_cross_section_ready's and cross_section_ready's
     docstrings for why the two sides diverge. This pins that boundary: a
     regression here would mean #413 accidentally tightened the write-side
@@ -613,7 +613,7 @@ class _Ret1dAwareConn:
     """Simulates ohlcv.prices as a source that answers each query with a
     DIFFERENT count depending on whether the query text actually requires
     `ret_1d IS NOT NULL` - proving the FIX's SQL is what changes trigger
-    behaviour, not just the fake's own plumbing. `bar_*` models the
+    behaviour, rather than the fake's own plumbing. `bar_*` models the
     ret_1d-unaware (pre-#413) query; `ret1d_*` models the ret_1d-filtered
     (post-#413) query. Routes exactly like _FakeConn otherwise (watermark
     lookup by 'ingest_watermark' in the text, trailing scan by 'GROUP BY 1',

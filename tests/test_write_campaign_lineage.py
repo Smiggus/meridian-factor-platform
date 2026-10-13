@@ -8,7 +8,7 @@ Two things are being protected here, and they pull in opposite directions:
      It is additive bookkeeping bolted onto the hot path for every one of
      a very large table.
 
-The parity tests are the load-bearing half of (2): the same input frame is
+The parity tests are the half of (2) that matters most: the same input frame is
 written with and without a campaign, and the score payload the database
 receives must be byte-identical. If a future change makes a lineage column
 perturb a value, these fail.
@@ -118,7 +118,7 @@ def _insert_chunks(conn):
 
 
 # ─────────────────────────────────────────────
-# input_vintage: the load-bearing field
+# input_vintage: the field that matters most
 # ─────────────────────────────────────────────
 
 
@@ -254,7 +254,7 @@ class TestParityWithAndWithoutCampaign:
             assert stamped == f"{plain},4242"
 
     def test_copy_path_unstamped_sql_is_unchanged_from_pre_294(self):
-        """Belt and braces: with no campaign the COPY statement is character
+        """Second check: with no campaign the COPY statement is character
         -for-character what it was before lineage existed."""
         from meridian_pipeline import db
 

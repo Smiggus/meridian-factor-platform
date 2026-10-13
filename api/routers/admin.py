@@ -1,13 +1,6 @@
-"""
-api/routers/admin.py
+"""Operational routes: /health, and the two cache routes that need admin rights (API-004).
 
-Operational endpoints:
-  GET  /health                  -- uptime + cache stats (no auth)
-  POST /cache/invalidate        -- flush in-process score cache (admin only, API-004)
-  POST /admin/cache/warm        -- invalidate cache entries for a date so the next request re-hydrates (admin only, API-004)
-
-The private service serves further routes from this router; they are not part
-of this export.
+The private service serves more routes from this router. They are not in this export.
 """
 
 from __future__ import annotations
@@ -30,17 +23,9 @@ router = APIRouter()
 _start_time = time.monotonic()
 
 
-# ─────────────────────────────────────────────
-# GET /health  (no auth)
-# ─────────────────────────────────────────────
-
-
 @router.get("/health")
 def health(cache: ScoreCache = Depends(get_cache)) -> dict:
-    """
-    Returns API uptime and cache statistics.
-    Does not require authentication.
-    """
+    """Uptime and cache statistics. No authentication."""
     return {
         "status": "ok",
         "uptime_seconds": round(time.monotonic() - _start_time, 1),
@@ -48,27 +33,14 @@ def health(cache: ScoreCache = Depends(get_cache)) -> dict:
     }
 
 
-# ─────────────────────────────────────────────
-# POST /cache/invalidate  (admin required, API-004)
-# ─────────────────────────────────────────────
-
-
 @router.post("/cache/invalidate", dependencies=[Depends(require_admin)])
 def invalidate_cache(cache: ScoreCache = Depends(get_cache)) -> dict:
-    """
-    Flushes all cached universe and score data.
-    The next request to /scores or /universe/scores will trigger a fresh fetch.
-    """
+    """Drop every cached universe and score entry; the next request refetches."""
     cleared = cache.invalidate()
     return {
         "cleared": cleared,
         "message": f"Cleared {cleared} cache entries. Next request will re-score.",
     }
-
-
-# ─────────────────────────────────────────────
-# POST /admin/cache/warm  (admin required, API-004)
-# ─────────────────────────────────────────────
 
 
 @router.post("/admin/cache/warm", dependencies=[Depends(require_admin)])
@@ -82,24 +54,15 @@ def warm_cache(
     ),
     cache: ScoreCache = Depends(get_cache),
 ) -> dict:
-    """
-    Invalidate in-process cache entries for *date* so the next consumer
-    request re-hydrates from PostgreSQL with the freshly written scores.
+    """Clear cached entries for a score date, or everything when no date is given.
 
-    Called by composite_cache_warm_sensor immediately after composite_scores
-    materialises for a partition, closing the write->serve gap where the
-    stale cache would otherwise serve old data until TTL expiry.
+    composite_cache_warm_sensor calls this once composite_scores has materialised a
+    partition, so readers do not get the old scores until the TTL runs out. Despite the name
+    it does not fill the cache. The first real request after the clear pays the database
+    round trip and repopulates it.
 
-    The endpoint is intentionally simple: it does NOT pre-populate the cache
-    (that would couple it to the scoring params the eventual caller will use).
-    Instead it clears the relevant slot so the first real request pays one DB
-    round-trip and then populates the cache for subsequent callers.
-
-    With ?date=YYYY-MM-DD: clears all cache keys that contain the date string
-    (covers full-universe and per-ticker calls for that date). Returns the
-    count of cleared entries.
-
-    Without ?date=: flushes all entries (same as POST /cache/invalidate).
+    With a date it removes every key that contains the date string, which covers
+    full-universe and per-ticker calls alike, and returns how many it removed.
     """
     if date is None:
         cleared = cache.invalidate()
@@ -111,9 +74,8 @@ def warm_cache(
 
     date_str = parse_iso_date(date, "date").isoformat()
 
-    # Scan and evict any cache key that embeds the date string.
-    # Cache keys are built as "<tickers>|<date>|<period>" by make_score_key(),
-    # so a substring match on the date is correct and cheap for a small cache.
+    # ScoreCache has no per-date invalidation, so this takes its lock and edits the store.
+    # Keys are "<tickers>|<date>|<period>" (make_score_key), so a substring match works.
     with cache._lock:
         to_evict = [k for k in list(cache._store) if date_str in k]
         for k in to_evict:

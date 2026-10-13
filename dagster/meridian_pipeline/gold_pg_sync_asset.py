@@ -60,7 +60,7 @@ class GoldPgSyncConfig(Config):
     this asset REFUSES to promote when that happens, because nothing
     distinguishes a batch that silently dropped a date from one that legitimately
     computed an empty date. Set this to True only after a human has confirmed
-    the missing date(s) are a deliberate, reviewed outcome of the recompute -
+    the missing date(s) are a known, reviewed outcome of the recompute -
     this is exactly the manual first-launch moment #401 was filed for, so the
     default stays fail-closed and this must be stated explicitly at launch,
     not left on.

@@ -9,7 +9,7 @@ That inversion is what #513 was. A pool member did not OOM because it was
 unsized; it OOMed because CPU_HEAVY's limit had been tightened to 4Gi (!503)
 while the untagged default it would otherwise have inherited was 8Gi.
 
-Requests are deliberately NOT constrained here. They drive scheduling and
+Requests are NOT constrained here. They drive scheduling and
 tightening them is the point of the tiers; the #305 measurements behind LIGHT's
 512Mi and CPU_HEAVY's 1Gi are sound. Only limits are floored, because a limit
 buys no placement accuracy - setting one below the default trades an OOM for
@@ -44,7 +44,7 @@ def _to_mi(mem: str) -> int:
 def _tier_limits() -> dict[str, str]:
     """Parse every *_STEP_CONFIG's memory limit straight from the source.
 
-    Deliberately source-level rather than importing the dicts: this must hold
+    Source-level rather than importing the dicts: this must hold
     for every tier that exists, including one added tomorrow by someone who
     never reads this file.
     """
@@ -98,8 +98,8 @@ def test_every_exemption_names_a_real_tier():
 def test_the_two_sub_floor_tiers_are_the_expected_ones():
     """Exactly the two 4Gi tiers are exempted, and nothing else drifts under.
 
-    Pins the SET, not just the rule: a third tier appearing here should be a
-    deliberate review decision, not something that arrives unnoticed.
+    Pins the SET as well as the rule: a third tier appearing here should be a
+    review decision, not something that arrives unnoticed.
     """
     from meridian_pipeline.k8s_config import MEASURED_SUB_FLOOR_LIMITS
 
@@ -110,7 +110,7 @@ def test_the_two_sub_floor_tiers_are_the_expected_ones():
 
 
 def test_each_exemption_cites_a_measurement():
-    """A justification must contain a number and a source, not just prose."""
+    """A justification must contain a number and a source; prose alone will not do."""
     from meridian_pipeline.k8s_config import MEASURED_SUB_FLOOR_LIMITS
 
     for tier, why in MEASURED_SUB_FLOOR_LIMITS.items():
@@ -121,7 +121,7 @@ def test_each_exemption_cites_a_measurement():
 
 
 def test_requests_are_not_constrained_by_this_rule():
-    """Documents the deliberate asymmetry so nobody 'fixes' the requests too.
+    """Documents the asymmetry so nobody 'fixes' the requests too.
 
     LIGHT keeps a 512Mi request against an 8Gi limit; that gap is intended.
     """
@@ -135,7 +135,7 @@ def test_requests_are_not_constrained_by_this_rule():
 def test_exempted_tiers_keep_headroom_over_their_measured_peak():
     """The exemption is only honest while the ceiling still clears the peak.
 
-    CPU_HEAVY's figure is the FULL-BREADTH daily peak, deliberately NOT the
+    CPU_HEAVY's figure is the FULL-BREADTH daily peak, NOT the
     lower figure seen on the widest-universe canaries - those canaries run at
     a lower factor breadth, so guarding against them would let the
     tier be tuned down to a ceiling the real daily workload can exceed. LIGHT's

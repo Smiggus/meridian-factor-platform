@@ -9,12 +9,11 @@ named __anonymous_asset_job_<schedule|sensor>. The UI then shows runs under
 those opaque names and they cannot be addressed by name for backfills.
 
 This module defines one named job per selection, used by:
-  - schedules.py via @schedule(job=<job>)
-  - sensors.py via @sensor(job=<job>)
+sensors.py targets them with @sensor(job=<job>). The private service's schedules do the same
+with @schedule(job=<job>); they are not part of this export.
 
-It lives in its own module (not definitions.py) so sensors.py and
-schedules.py can import the jobs without an import cycle (definitions.py
-imports both).
+It lives in its own module, not definitions.py, so sensors.py can import the jobs without an
+import cycle (definitions.py imports both).
 
 Job names are stable identifiers: daily_factor_core_job,
 daily_gpu_composite_job and gold_pg_sync_job predate this module and are
@@ -73,9 +72,9 @@ daily_scores_mirror_reconcile_job = define_asset_job(
     selection=AssetSelection.keys("daily_scores_mirror_reconcile"),
     description=(
         "Monthly whole-partition Iceberg mirror reconciliation for "
-        "factors.daily_scores (Meridian #420 recurrence fix). Runs via "
-        "mirror_reconcile_schedule (shipped STOPPED - see that schedule's "
-        "description). Whole-partition-replaces the trailing "
+        "factors.daily_scores (Meridian #420 recurrence fix). Runs on "
+        "a monthly schedule that is not part of this export. "
+        "Whole-partition-replaces the trailing "
         "MERIDIAN_MIRROR_RECONCILE_WINDOW_MONTHS (default 24) calendar months "
         "so orphan rows left by any PG write path that bypasses "
         "db.upsert_daily_scores eventually clear from the mirror."

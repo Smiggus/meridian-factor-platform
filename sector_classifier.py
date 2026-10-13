@@ -22,9 +22,7 @@ _sector_cache: dict[str, str] = {}
 _cache_loaded = False
 
 
-# -----------------------------------------------
 # DB-backed sector lookup (primary)
-# -----------------------------------------------
 
 
 def _load_sectors_from_db() -> dict[str, str]:
@@ -59,11 +57,6 @@ def _ensure_cache():
         _load_sectors_from_db()
 
 
-# -----------------------------------------------
-# Public API
-# -----------------------------------------------
-
-
 def get_sector(ticker: str) -> str | None:
     """Returns the GICS sector for a ticker from the DB cache, or None."""
     _ensure_cache()
@@ -87,9 +80,7 @@ def invalidate_cache():
     _sector_cache.clear()
 
 
-# -----------------------------------------------
 # Sector dummy matrix
-# -----------------------------------------------
 
 
 def build_sector_dummies(
@@ -105,11 +96,6 @@ def build_sector_dummies(
     if len(dummies.columns) > 1:
         dummies = dummies.iloc[:, 1:]
     return dummies
-
-
-# -----------------------------------------------
-# Diagnostics
-# -----------------------------------------------
 
 
 def sector_summary(sector_map: dict[str, str]) -> pd.DataFrame:

@@ -1,16 +1,12 @@
-"""
-definitions.py - SHOWCASE code-location entry point.
+"""Code-location entry point.
 
-The private repository registers a much larger asset graph here, with its
-schedules and sensors. This entry point registers what the showcase ships:
+Registers the three data-integrity asset checks, the gold sync and mirror
+reconcile assets, the risk_metrics asset, the sensors, the jobs those sensors
+target and the range-verification job.
 
-  - the three data-integrity asset checks,
-  - stand-ins for the withheld factor assets (same keys and partitions, so the
-    jobs and sensors below resolve against a complete asset graph),
-  - the gold sync and mirror reconcile assets (the lakehouse side of the write
-    path) and the risk_metrics asset,
-  - the alerting and orchestration sensors,
-  - the jobs those sensors target, and the range-verification job.
+The factor assets are minimal placeholders for code not included here. They use
+the same keys and partitions as the real ones, so the jobs and sensors resolve
+against a complete asset graph, and they raise if materialised.
 
 `dagster code-server start -m meridian_pipeline.definitions` serves it.
 """
@@ -25,19 +21,24 @@ from meridian_pipeline.mirror_reconcile_asset import daily_scores_mirror_reconci
 from meridian_pipeline.partitions import DAILY_BACKFILL_POLICY, DAILY_PARTITIONS
 from meridian_pipeline.risk_metrics_asset import risk_metrics
 
-_WITHHELD_KEYS = (*CORE_FACTOR_ASSET_KEYS, "market_vol", "composite_scores", "factor_group_scores")
+_PLACEHOLDER_KEYS = (
+    *CORE_FACTOR_ASSET_KEYS,
+    "market_vol",
+    "composite_scores",
+    "factor_group_scores",
+)
 
 
-def _withheld(key: str):
+def _placeholder(key: str):
     @asset(
         name=key,
-        group_name="withheld",
+        group_name="placeholder",
         partitions_def=DAILY_PARTITIONS,
         backfill_policy=DAILY_BACKFILL_POLICY,
-        description="Showcase stand-in: the factor computation behind this key is not published.",
+        description="Placeholder for a factor computation that is not included in this copy.",
     )
     def _stand_in():
-        raise NotImplementedError(f"{key} is a showcase stand-in; the computation is withheld")
+        raise NotImplementedError(f"{key} is a placeholder; its computation is not included")
 
     return _stand_in
 
@@ -47,7 +48,7 @@ defs = Definitions(
         risk_metrics,
         gold_scores_pg_sync,
         daily_scores_mirror_reconcile,
-        *[_withheld(k) for k in _WITHHELD_KEYS],
+        *[_placeholder(k) for k in _PLACEHOLDER_KEYS],
     ],
     asset_checks=ALL_FACTOR_CHECKS,
     jobs=[

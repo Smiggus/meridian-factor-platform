@@ -157,7 +157,7 @@ def test_scored_tables_covers_every_score_date_keyed_output_table():
 
 def test_load_table_dates_rejects_unknown_table():
     """Table name is string-interpolated into SQL (no bind param for
-    identifiers), so the allow-list check is load-bearing."""
+    identifiers), so the allow-list check matters."""
     with pytest.raises(ValueError):
         tdc.load_table_dates(
             MagicMock(), "factors.daily_scores; DROP TABLE x", date(2026, 1, 1), date(2026, 1, 2)

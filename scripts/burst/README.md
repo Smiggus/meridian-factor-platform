@@ -1,20 +1,19 @@
-# Burst compute PoC (Dagster Pipes + Dask)
+# Burst compute (Dagster Pipes + Dask)
 
 Elastic CPU offload for whole-population jobs the k3s cluster struggles with.
 Design notes: [`docs/ARCHITECTURE.md`](../../docs/ARCHITECTURE.md).
 
-Three planes: **Dagster on the cluster** (control), **Pipes over MinIO**
-(bridge), **Dask on a burst box** (muscle). The burst box writes a MinIO
-*staging* prefix and NEVER writes gold; the cluster hole-checks + parity-gates +
-promotes.
+The cluster's Dagster asset opens a Pipes session whose messages travel through MinIO, and Dask
+on the burst box does the compute. The box writes a MinIO staging prefix and never writes gold.
+The cluster hole-checks, parity-gates and promotes.
 
 ## Files
 
-| File | Plane | Runs on |
+| File | Role | Runs on |
 |---|---|---|
 | `burst_common.py` | shared config / partitions / kernel / staging IO / gates | anywhere |
-| `pipes_dask_driver.py` | muscle: Dask fan-out + Pipes reporting | burst box |
-| `dagster/meridian_pipeline/burst_backfill.py` | control: parked Pipes asset | cluster (unregistered until validated) |
+| `pipes_dask_driver.py` | Dask fan-out and Pipes reporting | burst box |
+| `dagster/meridian_pipeline/burst_backfill.py` | parked Pipes asset | cluster (unregistered until validated) |
 
 ## Standalone run (PoC - no cluster asset needed)
 
@@ -55,7 +54,7 @@ work), `--mem-limit` sized to `free -h` at launch.
 
 ## Resume after a crash
 
-Relaunch the driver with the **same `--run-id` and `--range`**. Per-partition
+Relaunch the driver with the same `--run-id` and `--range`. Per-partition
 sentinels (`burst/<run_id>/sentinels/<date>.json`) make it skip completed days
 and recompute only the gap. No Dagster restart needed.
 
@@ -66,8 +65,8 @@ topology from it.
 
 | Kernel | Device | What it proves |
 |---|---|---|
-| `verify` (default) | cpu | CPU plane: reads a day's gold, cross-sectional standardization, fingerprint. Exact parity (pure function of gold). Fans out across `--workers`. |
-| `gpu_smoke` | gpu | GPU plane: real float64 matmul on the box's GPU (cu128), deterministic, + touches gold. One GPU-owning worker, `resources={"GPU": 1}`, CUDA teardown after gather. `--workers` is ignored (single device). |
+| `verify` (default) | cpu | CPU path: reads a day's gold, cross-sectional standardization, fingerprint. Exact parity (pure function of gold). Fans out across `--workers`. |
+| `gpu_smoke` | gpu | GPU path: real float64 matmul on the box's GPU (cu128), deterministic, + touches gold. One GPU-owning worker, `resources={"GPU": 1}`, CUDA teardown after gather. `--workers` is ignored (single device). |
 
 Swap in a real per-partition scoring kernel (one entry in `KERNELS` with its
 device) to turn this into a production backfill - the driver, staging, gates,

@@ -13,17 +13,15 @@ class _Entry:
 
 
 class ScoreCache:
-    """
-    In-memory cache for universe score DataFrames.
+    """In-memory TTL cache for universe score DataFrames.
 
-    Keys are deterministic strings built from the scoring parameters
-    (sorted tickers + date + period). An expired entry is dropped lazily on
-    get() and, so keys that are never requested again cannot pile up, swept
-    on every set(). The store is also size-bounded: when a set() would take
-    it past `max_entries`, expired entries go first and then the oldest
-    (closest to expiry, since the TTL is uniform) until it fits.
-    `max_entries <= 0` disables the bound.
-    Thread-safe for multi-worker use via a single lock.
+    Keys are strings built from the scoring parameters (sorted tickers, date, period). get()
+    drops an expired entry it finds and set() sweeps all of them, so keys nobody asks for
+    again do not pile up. When a set() would push the store past `max_entries` the oldest
+    insertions go, and `max_entries <= 0` turns the limit off.
+
+    One lock guards everything. The cache is per process, so with several uvicorn workers
+    each has its own copy and an invalidation only reaches the worker that served it.
     """
 
     DEFAULT_MAX_ENTRIES = 256
@@ -36,8 +34,6 @@ class ScoreCache:
         self._lock = threading.Lock()
         self._hits = 0
         self._misses = 0
-
-    # ── Public interface ──────────────────────────────────────────────────────
 
     def get(self, key: str) -> pd.DataFrame | None:
         with self._lock:
@@ -53,15 +49,12 @@ class ScoreCache:
     def set(self, key: str, df: pd.DataFrame) -> None:
         now = time.monotonic()
         with self._lock:
-            # Sweep expired entries first: an expired key that is never asked
-            # for again would otherwise live (and hold its DataFrame) forever.
             expired = [k for k, e in self._store.items() if now > e.expires_at]
             for k in expired:
                 del self._store[k]
             self._evictions += len(expired)
 
-            # Re-inserting moves a refreshed key to the back of the order.
-            self._store.pop(key, None)
+            self._store.pop(key, None)  # re-insert so a refreshed key goes to the back
             self._store[key] = _Entry(
                 df=df.copy(),
                 created_at=now,
@@ -108,9 +101,6 @@ class ScoreCache:
             "hit_rate": round(self._hits / max(1, self._hits + self._misses), 3),
             "cache": entries,
         }
-
-
-# ── Key helpers ───────────────────────────────────────────────────────────────
 
 
 def make_score_key(tickers: list[str], date: str | None, period: str) -> str:

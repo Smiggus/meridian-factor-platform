@@ -111,7 +111,7 @@ def test_assert_dual_write_ready_ok_when_creds_present_and_catalog_reachable(mon
 
 def test_assert_dual_write_ready_noop_when_dual_write_disabled(monkeypatch):
     """State 1 (not configured at all): MERIDIAN_ICEBERG_DUAL_WRITE=false (e.g.
-    --no-iceberg) is a legitimate, deliberate PG-only run - proceed, no network
+    --no-iceberg) is a legitimate PG-only run - proceed, no network
     probe at all (assert lakehouse_available is never even consulted)."""
     monkeypatch.setattr(lakehouse, "LAKEKEEPER_M2M_CLIENT_ID", "")
     monkeypatch.setattr(lakehouse, "LAKEKEEPER_M2M_CLIENT_SECRET", "")
@@ -157,7 +157,7 @@ def test_assert_dual_write_ready_raises_when_creds_present_but_catalog_unreachab
 
 def test_assert_dual_write_ready_downgrades_to_warning_when_unreachable_and_optional(monkeypatch):
     """MERIDIAN_ICEBERG_OPTIONAL=1 also downgrades the unreachable-catalog
-    failure mode (not just creds-absent) to a warning."""
+    failure mode (as well as creds-absent) to a warning."""
     monkeypatch.setattr(lakehouse, "LAKEKEEPER_M2M_CLIENT_ID", "cid")
     monkeypatch.setattr(lakehouse, "LAKEKEEPER_M2M_CLIENT_SECRET", "csec")
     monkeypatch.setattr(lakehouse, "MERIDIAN_MINIO_ACCESS_KEY", "ak")
@@ -565,7 +565,7 @@ def test_replace_daily_scores_months_skips_empty_month_by_default(monkeypatch):
 
 
 def test_replace_daily_scores_months_wipes_empty_month_when_opted_in(monkeypatch):
-    """skip_empty=False is the deliberate opposite: a genuinely-empty month
+    """skip_empty=False is the opposite: a genuinely-empty month
     IS replaced (wiped), matching the ad-hoc script's non-default
     behaviour."""
     pytest.importorskip("pyiceberg")

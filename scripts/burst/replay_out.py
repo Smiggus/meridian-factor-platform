@@ -11,7 +11,7 @@ Each date becomes one parquet file whose columns are exactly what
 anything - it reads and upserts. A transformation on the promote side would be a
 second place for the two halves to disagree.
 
-`campaign_id` is deliberately NOT written here. The box has no business deciding
+`campaign_id` is NOT written here. The box has no business deciding
 lineage; promote stamps it from the explicit campaign so every row lands under
 one auditable id regardless of how many box runs produced it.
 

@@ -347,7 +347,7 @@ def _compute_risk_metrics_for_date(engine, score_date: date) -> tuple[list[dict]
         dim=0
     ).float().clamp(min=1)
 
-    # ── TICKER-SPLICE GUARD (see splice_guard.py) ───────────────────────────
+    # TICKER-SPLICE GUARD (see splice_guard.py)
     # `valid`/`mask` above only count non-NaN observations in a window; they
     # do not check whether those observations are temporally contiguous. A
     # reused ticker symbol whose old and new companies each individually

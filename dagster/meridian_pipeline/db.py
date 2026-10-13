@@ -30,20 +30,11 @@ from meridian_pipeline.pg_identity import PIPELINE_APPLICATION_NAME, pg_applicat
 
 _log = logging.getLogger(__name__)
 
-# Bounded connection pool, cached per-URL at module level.
-#
-# Switched from NullPool (one fresh connection per query) to a bounded
-# QueuePool to avoid connection storms during heavy ops like
-# gpu_asset (5 source queries x thousands of tickers x N concurrent runs).
-# Caching the engine per-URL means consumers that call _engine() many
-# times in one process get the same engine -- and therefore share its
-# pool of up to (pool_size + max_overflow) = 5 connections. Connections
-# are recycled every 5 minutes to avoid stale-connection issues.
-#
-# Sized for the run pod's actual concurrency: each run materialises
-# assets sequentially via the multiprocess executor, so at most a handful
-# of subprocess threads need a connection at once. pool_size=3 covers
-# the common case; max_overflow=2 absorbs short bursts.
+# Engines are cached per URL, each with a bounded QueuePool. This replaced NullPool, which opened a
+# fresh connection per query and caused connection storms in heavy ops (5 source queries x
+# thousands of tickers x N concurrent runs). A run pod materialises assets one at a time through
+# the multiprocess executor, so few threads need a connection at once: 3 plus 2 overflow,
+# recycled every 5 minutes.
 _POOL_SIZE = 3
 _MAX_OVERFLOW = 2
 _POOL_RECYCLE_SECONDS = 300
@@ -93,9 +84,9 @@ def _engine(
 def engine_from_env():
     """Build an engine from PGUSER / PGPASS / PGHOST / PGPORT / PGDB env vars.
 
-    Single-source-of-truth helper for callers that just want a db.internal engine
-    using the standard env contract. Delegates to `_engine` so any pool /
-    cache changes there propagate everywhere automatically.
+    One place to get an engine for callers that just want the usual env
+    contract. It delegates to `_engine`, so pool and cache changes there
+    reach every caller.
     """
     return _engine(
         pguser=os.environ.get("PGUSER", "dbuser"),
@@ -106,16 +97,9 @@ def engine_from_env():
     )
 
 
-# ─────────────────────────────────────────────
-# Partition floor resolution
-# ─────────────────────────────────────────────
-
-# Hard-barrier floor query: GREATEST across every Meridian input table,
-# each padded by its scoring lookback requirement. The result is the
-# earliest date where ALL factor groups can produce output simultaneously.
-#
-# Each input table is padded by the longest lookback requirement of any
-# factor group.
+# Partition floor: the earliest date at which every factor group can produce output.
+# GREATEST across the input tables, each padded by the longest lookback any factor group
+# needs from it.
 _PARTITION_FLOOR_SQL = """
 SELECT GREATEST(
     (SELECT MIN(ts_event)::date + INTERVAL '730 days'
@@ -148,8 +132,8 @@ def resolve_partition_start() -> str:
     """Return the earliest date where all Meridian factor groups can produce output.
 
     Checks PARTITION_START_DATE env var first (set in CI and local dev to skip
-    the DB query). Falls back to _PARTITION_FLOOR_FALLBACK if db.internal is unreachable
-    at import time so the code server boots regardless of DB state.
+    the DB query). Falls back to _PARTITION_FLOOR_FALLBACK if the database is unreachable
+    at import time, so the code server boots whatever state the DB is in.
 
     Result is cached on the module at import time - floor changes (from LDP
     history extensions) take effect on the next code server restart.
@@ -204,9 +188,7 @@ def _assert_df_score_dates_not_future(df: pd.DataFrame) -> None:
         )
 
 
-# ─────────────────────────────────────────────
 # Cross-section single-dated guard (read-during-write hardening)
-# ─────────────────────────────────────────────
 #
 # UPDATE (2026-08-15): LDP's completion watermark (ohlcv.ingest_watermark)
 # is now live. `assert_cross_section_single_dated` checks it FIRST
@@ -228,14 +210,14 @@ def _assert_df_score_dates_not_future(df: pd.DataFrame) -> None:
 # UPDATE (2026-09-18, Meridian #413): `trigger_cross_section_ready`'s
 # fallback (`_cross_section_present_count_unscoped` /
 # `_cross_section_trailing_coverage_unscoped`) now requires a non-NULL
-# `ret_1d`, not just bar presence. Bars land the moment LDP's price ingest
+# `ret_1d`, in addition to bar presence. Bars land the moment LDP's price ingest
 # writes the row; `ret_1d` is computed by a separate, later pass
 # (`ohlcv_returns`) that can still be running once every bar for the date
 # has landed. Counting bars let the sensor fire while returns were still
 # being computed, so a run could start before the returns existed. The
 # write-side guard
 # (`cross_section_ready`, used by `assert_cross_section_single_dated`)
-# deliberately stays bar-only - see that function's docstring and
+# stays bar-only - see that function's docstring and
 # `trigger_cross_section_ready`'s for the full argument on why the two
 # sides now count different populations despite sharing one decision
 # function and one set of thresholds.
@@ -444,7 +426,7 @@ def cross_section_ready(engine, score_date: date, tickers: list[str]) -> tuple[b
 
     UPDATE (2026-09, Meridian#413): this function's own POPULATION (bar
     presence, via `_cross_section_present_count` /
-    `_cross_section_trailing_coverage`) deliberately does NOT require
+    `_cross_section_trailing_coverage`) does NOT require
     `ret_1d`, unlike `trigger_cross_section_ready`'s fallback population
     below it - see that function's docstring for the full argument. In
     short: this guard runs from inside a specific asset's partition loop,
@@ -562,14 +544,14 @@ def _cross_section_present_count_unscoped(engine, d: date) -> int:
     counterpart to `_cross_section_present_count` (used by the
     tickers-scoped guard above).
 
-    Requires `ret_1d IS NOT NULL`, not just bar presence (Meridian#413). A
+    Requires `ret_1d IS NOT NULL` as well as bar presence (Meridian#413). A
     bar lands the moment the price row is ingested; `ret_1d` is computed by
     a separate downstream LDP pass (`ohlcv_returns`) that can still be
     running after every bar for the date has landed. Counting bars alone let
     `trigger_cross_section_ready`'s fallback read a date as ready while
     returns were still being computed. See
     `trigger_cross_section_ready`'s docstring for why this scoped-out
-    population deliberately does NOT change to match
+    population does NOT change to match
     (`_cross_section_present_count`, used by the write-side guard, stays
     bar-only).
 
@@ -656,12 +638,12 @@ def trigger_cross_section_ready(engine, score_date: date) -> tuple[bool, str]:
     `resolution='daily' AND security_type='equity'` filter
     `tradable_universe_size` uses) for `score_date` and the trailing trading
     sessions, using the trailing MEDIAN count as the reference denominator for
-    the human-readable message (not just the most recent trailing session,
+    the human-readable message (rather than the most recent trailing session alone,
     which would make that one session read as a tautological 100%) - the
     decision itself only depends on the RELATIVE drop from the trailing
     median, which is invariant to that choice of denominator.
 
-    Second, and deliberately (Meridian#413): the POPULATION counted by that
+    Second, and on purpose (Meridian#413): the POPULATION counted by that
     fallback additionally requires a non-NULL `ret_1d`, where
     `cross_section_ready`'s does not. A bar lands the instant LDP's price
     ingest writes the row; `ret_1d` is computed by a separate, LATER pass
@@ -723,7 +705,7 @@ def trigger_cross_section_ready(engine, score_date: date) -> tuple[bool, str]:
         return True, ""
 
     # Reference denominator for the human-readable message: the trailing
-    # MEDIAN count, not just the single most recent trailing session - using
+    # MEDIAN count, rather than the single most recent trailing session - using
     # trailing[0] alone would make that session read as a tautological 100%
     # in the message below. The decision itself (cross_section_completeness_ok)
     # only depends on the RELATIVE drop from the trailing median regardless of
@@ -753,9 +735,7 @@ def trigger_cross_section_ready(engine, score_date: date) -> tuple[bool, str]:
     )
 
 
-# ─────────────────────────────────────────────
 # Universe-anchored coverage gate (see SCOPE)
-# ─────────────────────────────────────────────
 #
 # WHAT THIS GATE CATCHES: the scored cross-section fell below the tradable
 # tape THAT WAS AVAILABLE at scoring time. Factor scores are cross-sectional
@@ -766,7 +746,7 @@ def trigger_cross_section_ready(engine, score_date: date) -> tuple[bool, str]:
 #
 # WHAT THIS GATE DOES NOT CATCH: the tape ITSELF being short. A short tape
 # shrinks the denominator and pushes the ratio ABOVE 1.0, the regime documented
-# below as normal and deliberately not bounded, so the gate stays silent. A
+# below as normal and not bounded, so the gate stays silent. A
 # passing gate is therefore not evidence that the universe is whole.
 #
 # THE GENERAL PRINCIPLE: you cannot detect a shrinking reference by measuring
@@ -776,7 +756,7 @@ def trigger_cross_section_ready(engine, score_date: date) -> tuple[bool, str]:
 # ABSOLUTE one: an expectation for the universe size that is NOT derived from
 # any artifact the ingest pipeline writes (a floor on manifest size, or a
 # cross-check against an independent constituent source). That belongs with
-# whoever owns the universe contract and is deliberately not bolted on here.
+# whoever owns the universe contract and is not bolted on here.
 #
 # WHY THE TRAILING-BASELINE GATES ARE THE WRONG SHAPE ON THEIR OWN:
 # `_composite_group_trailing_medians` derives its baseline from
@@ -827,7 +807,7 @@ def universe_coverage_ok(
     cross-section, or has scoring silently dropped a large slice of the
     actively-trading tape?
 
-    Deliberately anchored outside `factors.*` - see the module comment above
+    Anchored outside `factors.*` - see the module comment above
     `_UNIVERSE_COVERAGE_MIN_FRACTION` for why a trailing-history baseline
     (`_composite_group_trailing_medians`) is structurally unable to see a
     sustained coverage break, and for the measurement behind the default
@@ -839,7 +819,7 @@ def universe_coverage_ok(
     pushes the ratio ABOVE 1.0, where this gate is silent by design. The
     missing control for that is an absolute universe-size
     expectation not derived from any ingest-written artifact; it is
-    deliberately not implemented here.
+    not implemented here.
 
     Args:
         scored_tickers: distinct tickers in this partition's scored
@@ -923,7 +903,7 @@ def assert_universe_coverage(
     of scope - see `universe_coverage_ok`'s SCOPE note and the module
     comment.
 
-    Two callers, two floors, deliberately - `factor_group_scores`
+    Two callers, two floors, on purpose - `factor_group_scores`
     (group_scores_asset.py) at the default, and `composite_scores`
     (assets.py) at `_COMPOSITE_UNIVERSE_COVERAGE_MIN_FRACTION`, because the
     composite blends a systematically narrower cross-section than
@@ -969,9 +949,7 @@ def assert_universe_coverage(
     )
 
 
-# ─────────────────────────────────────────────
 # Watermark-driven scoring trigger (Meridian #286: cron -> dependency cutover)
-# ─────────────────────────────────────────────
 #
 # daily_factor_scoring used to fire on a fixed wall-clock cron, sized against
 # an expected upstream finish time. If the upstream ingest finishes later than
@@ -1029,10 +1007,6 @@ def get_new_complete_trade_dates(engine, since: date, limit: int = 30) -> list[d
         ).fetchall()
     return [r[0] for r in rows]
 
-
-# ─────────────────────────────────────────────
-# Schema bootstrap
-# ─────────────────────────────────────────────
 
 # Deadlock-safe DDL bootstrap.
 #
@@ -1140,9 +1114,7 @@ def ensure_schema(engine) -> None:
     ensure_composite_blend_provenance_column(engine)
 
 
-# ─────────────────────────────────────────────
 # Write-campaign lineage (Meridian #294 / #295)
-# ─────────────────────────────────────────────
 #
 # See meridian_pipeline/lineage.py for the model and
 # dagster/db/migrations/2026-08-02_write_campaigns.sql for the schema rationale.
@@ -1162,7 +1134,7 @@ def ensure_schema(engine) -> None:
 #   2. Every helper here except the probe swallows its own exceptions and
 #      returns None. A NULL campaign_id is a legitimate, expected state (lineage
 #      disabled, column not yet present); it is never an error condition for the
-#      caller. The probe is the deliberate exception: resolve_campaign_id calls
+#      caller. The probe is the exception: resolve_campaign_id calls
 #      it, so every stamped writer (daily/group/composite scores, factor and
 #      specific returns, covariance, specific risk) now fails fast on a probe
 #      error instead of writing unstamped rows.
@@ -1636,11 +1608,6 @@ def read_write_campaign(engine, campaign_id: int) -> "dict | None":
         return None
 
 
-# ─────────────────────────────────────────────
-# Reads
-# ─────────────────────────────────────────────
-
-
 def has_scores_for_date(engine, score_date: date) -> bool:
     """Check if factor scores exist for a given date."""
     with engine.connect() as conn:
@@ -1710,11 +1677,6 @@ def read_daily_scores(engine, score_date: date) -> pd.DataFrame:
     )
 
 
-# ─────────────────────────────────────────────
-# Writes
-# ─────────────────────────────────────────────
-
-
 # Chunk size for the executemany-style upserts below. Same idiom as
 # `risk_metrics_asset._upsert_risk_metrics`. Daily scoring writes many
 # rows per partition across the daily SDA assets; row-by-row inserts
@@ -1727,7 +1689,6 @@ def read_daily_scores(engine, score_date: date) -> pd.DataFrame:
 _UPSERT_CHUNK = 1000
 
 
-# ---------------------------------------------------------------------------
 # Cold-tier-safe writes (Meridian#432)
 #
 # db-host is moving old factors.daily_scores months to an Iceberg cold tier (a
@@ -1745,8 +1706,6 @@ _UPSERT_CHUNK = 1000
 # index, two concurrent writers of the same keys would both delete (finding
 # nothing) and both insert. Serialising writers per score_date makes the second
 # one's DELETE see the first one's committed rows.
-# ---------------------------------------------------------------------------
-
 # 32-bit namespace per table, placed in the high half of the 64-bit advisory key
 # with the date ordinal (< 2**20 until year 2872) in the low half. Both
 # namespaces are < 2**31, so the key is a positive signed bigint. pg_advisory
@@ -2128,7 +2087,7 @@ def _delete_insert_staged(conn, st: "_Staged | None", *, key_delete: bool) -> "t
     carry_cols are the columns the old ON CONFLICT DO UPDATE SET left alone:
     a surviving row keeps its existing value. `carried` is reduced with
     DISTINCT ON so a key that already has duplicate rows cannot multiply the
-    [redacted: internal research note]
+    insert; the row kept is the newest by `order_col` (computed_at, also returned
     by the DELETE as an ordering column only) and then by the carry values, so
     the choice is deterministic. Returns (rows_deleted, rows_inserted).
 
@@ -2192,7 +2151,7 @@ def _assert_owned_factors_present(
     """Refuse a delete-without-replace (Meridian#378).
 
     ``owned_factors`` makes the DELETE cover names the payload may not carry.
-    That is deliberate for a canonical-superset writer and fatal for a writer
+    That is intended for a canonical-superset writer and fatal for a writer
     whose owned list is meant to be what it just computed: the rows are deleted,
     nothing replaces them, and the run is green. Callers that genuinely mean the
     superset pass ``allow_unwritten_owned_factors=True``.
@@ -2382,7 +2341,7 @@ def upsert_daily_scores(
     derived from `df` itself, which is the thing being checked) over the
     declared interval, and by default REFUSES the write when any in-scope
     trading day has zero payload rows, logging the missing dates either way.
-    Pass allow_interior_gaps=True only when an empty date is a deliberate,
+    Pass allow_interior_gaps=True only when an empty date is a known,
     reviewed outcome of the recompute (not merely "the caller expects gaps") -
     the same explicit-opt-out shape as allow_unwritten_owned_factors above.
 
@@ -2402,7 +2361,7 @@ def upsert_daily_scores(
 
     owned_factors deletes are scoped to (score_date, factor_name) only - NOT
     group_name - because owned_factors asserts the caller has EXCLUSIVE
-    ownership of those factor names across every group, not just the groups
+    ownership of those factor names across every group, beyond the groups
     that happen to appear in this payload. Fix #5's original implementation
     grouped the delete by (score_date, group_name) pairs derived from df, so a
     factor whose entire designated group was absent from the payload (e.g.
@@ -2661,7 +2620,7 @@ def upsert_daily_scores(
     # PG transaction committed above; mirror it into the columnar read stores.
     # campaign_id is stripped from the mirror frame: the flat-parquet and
     # Iceberg schemas are fixed and PG is the lineage authority for now.
-    # Propagating the stamp into the mirrors is a deliberate follow-up (it needs
+    # Propagating the stamp into the mirrors is a planned follow-up (it needs
     # an Iceberg schema evolution on meridian.factors.daily_scores), not a
     # silent side effect of this change.
     mirror_df = pd.DataFrame(rows)
@@ -2780,14 +2739,14 @@ def copy_replace_daily_scores(
         first, so which rows exist is unchanged.
       * campaign_id (Meridian#294, optional) is COPYed as a constant extra
         field per row when a campaign is bound. Two constant CSV fields cost
-        nothing measurable next to the COPY itself, and there is deliberately
+        nothing measurable next to the COPY itself, and there is
         NO foreign key on the column, so no per-row referential trigger fires -
         the throughput reason this path exists is preserved.
       * The PG write is a single transaction (delete + copy commit together).
         Once it commits, this calls the SAME `_dual_write_daily_scores` helper
         `upsert_daily_scores` does, so swapping the promote path onto COPY does
         not silently drop the flat-parquet / Iceberg mirrors. That parity is
-        load-bearing: promote_backfill.py runs
+        required: promote_backfill.py runs
         `lakehouse.assert_dual_write_ready()` as a preflight, and a write path
         that skips the mirror would make that preflight pass while every
         promoted partition quietly missed Iceberg (the Meridian#266 bypass
@@ -3340,7 +3299,7 @@ def missing_trading_days(engine, lo: date, hi: date, payload_days: set) -> "list
     holiday scale, well under a second for a normal one-month promotion, and
     nothing for a complete payload.
 
-    Exactness is load-bearing here, which is why this does not take
+    Exactness matters here, which is why this does not take
     count_trading_days_between's cap-and-approximate path: that gate trades
     exactness for speed on a hot path, but this function backs a REFUSAL, so
     a weekday approximation misclassifying a holiday as an expected trading

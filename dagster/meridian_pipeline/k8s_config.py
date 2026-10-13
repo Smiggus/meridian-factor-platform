@@ -139,9 +139,7 @@ GPU_OP_TAGS: Final[dict[str, str]] = {
 }
 
 
-# ─────────────────────────────────────────────
 # Right-sized step-pod resources per asset tier (Meridian #80, 2026-05-14)
-# ─────────────────────────────────────────────
 #
 # Background: Dagster's k8s_job_executor copies the code-server pod's
 # resource block as the template for step pods unless dagster-k8s/config
@@ -159,10 +157,8 @@ GPU_OP_TAGS: Final[dict[str, str]] = {
 # yet because they weren't observed during the test (they run after the
 # parallel fanout). Tune them after the next backfill produces telemetry.
 
-# ─────────────────────────────────────────────
 # MinIO secret injection for the LDP Parquet read path (Meridian #101) +
 # the meridian Iceberg warehouse write path (docs/17-LAKEHOUSE.md)
-# ─────────────────────────────────────────────
 #
 # The factor assets execute in run/step pods spawned by K8sRunLauncher /
 # k8s_job_executor, NOT in the code-server pod. STEP pods (k8s_job_executor) get
@@ -202,9 +198,7 @@ _GPU_WITH_MINIO_CONFIG: Final[dict[str, Any]] = {
 }
 GPU_WITH_MINIO_RUN_K8S_CONFIG: Final[str] = json.dumps(_GPU_WITH_MINIO_CONFIG)
 
-# ─────────────────────────────────────────────
 # Step memory LIMITS must never fall below the untagged default
-# ─────────────────────────────────────────────
 #
 # A step pod with NO op_tags gets the chart's default block (1Gi request /
 # 8Gi limit):
@@ -238,7 +232,7 @@ GPU_WITH_MINIO_RUN_K8S_CONFIG: Final[str] = json.dumps(_GPU_WITH_MINIO_CONFIG)
 # enforces it.
 LIMIT_FLOOR_MEMORY: Final[str] = "8Gi"
 
-# Deliberate, MEASURED exceptions to the floor above.
+# MEASURED exceptions to the floor above.
 #
 # "Below the untagged default" is not automatically wrong - a cap can be a real
 # design choice, e.g. failing a runaway step fast rather than letting it consume
@@ -301,9 +295,7 @@ LIGHT_OP_TAGS: Final[dict[str, str]] = {
     "dagster-k8s/config": json.dumps(_LIGHT_STEP_CONFIG),
 }
 
-# ─────────────────────────────────────────────
 # CPU_HEAVY tier (Meridian#138; re-tuned + split #305)
-# ─────────────────────────────────────────────
 #
 # Factor assets that read LDP Parquet and run a Polars/numpy compute over a
 # full partition (several input tables, or a trailing price-history window) peak well above the 512Mi LIGHT
@@ -386,14 +378,12 @@ CPU_HEAVY_OP_TAGS: Final[dict[str, str]] = {
 # 2Gi/8Gi) - see the CPU_HEAVY sizing note above. Keep memory-heavy CPU factor
 # assets on the shared cpu_heavy tag rather than proliferating per-asset tiers.
 
-# ─────────────────────────────────────────────
 # CPU multiprocess backfill run-pod config (Meridian #107)
-# ─────────────────────────────────────────────
 #
 # Run-pod config for meridian_cpu_backfill_job: the CPU phase of the two-phase
 # backfill. Carried as a job-level `dagster/run_k8s_config` tag.
 #
-# Deliberately carries NO `dagster/gpu` tag and NO `nvidia.com/gpu` request, so
+# Carries NO `dagster/gpu` tag and NO `nvidia.com/gpu` request, so
 # the run stays OFF the cluster-wide gpu pool (cap=1) and schedules on ANY node.
 # That decouples the CPU bulk from the GPU bottleneck and avoids the
 # multiprocess+gpu-pool self-deadlock (the GPU phase stays on
@@ -424,9 +414,7 @@ _CPU_BACKFILL_CONFIG: Final[dict[str, Any]] = {
 }
 CPU_BACKFILL_RUN_K8S_CONFIG: Final[str] = json.dumps(_CPU_BACKFILL_CONFIG)
 
-# ─────────────────────────────────────────────
 # In-cluster bulk rescore run-pod config (Meridian #275 follow-up)
-# ─────────────────────────────────────────────
 #
 # Run-pod config for incluster_bulk_rescore_job (bulk_rescore_ret1d_close.py
 # kernel run in-cluster instead of on a burst box). Carried as a job-level

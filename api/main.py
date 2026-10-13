@@ -20,9 +20,8 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Meridian Factor API",
     description=(
-        "Standalone factor scoring engine. "
-        "Ingests FMP data, computes cross-sectional factor scores, "
-        "and exposes them via authenticated REST endpoints."
+        "Read-only API over factors.daily_scores. The Dagster pipeline writes the scores; "
+        "this service serves them to authenticated clients."
     ),
     version="0.1.0",
     lifespan=lifespan,

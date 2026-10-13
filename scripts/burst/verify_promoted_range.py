@@ -13,8 +13,8 @@ membership and z_score equal to < 1e-9.
     python scripts/burst/verify_promoted_range.py --run-id backfill-2018 \
         --start 2018-01-02 --end 2019-12-31 --all
 
-Cost: one parquet GET (a few MB) plus one point query per date. `--all` over a
-503-date range is a few hundred MB of reads and a few hundred indexed lookups.
+It reads the staged parquet once and runs one indexed point query per date, so `--all`
+issues one query for every date in the range.
 """
 
 import argparse

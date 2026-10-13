@@ -13,29 +13,23 @@ silently broke again:
     score_date FROM factors.daily_scores``) rather than from a calendar, so it
     inherited the re-seeded non-trading dates and wrote more groups onto them.
 
-That second step is why this class of contamination is self-amplifying: any
-writer that derives its partition set from gold will faithfully reproduce
-whatever junk dates gold already carries. A one-off purge therefore cannot
-hold the invariant on its own; it needs a tripwire.
+The second case is the one that matters. A writer that derives its partition
+set from gold reproduces whatever junk dates gold already carries, so a
+one-off purge does not hold the invariant by itself.
 
-A purge scoped to one table cannot cover the other score-date-keyed output
-tables, so the sweep below checks each of them.
+The purge covered one table, so the sweep below checks every other
+score-date-keyed output table as well.
 
-THIS CHECK
-----------
-``check_trading_day_invariant`` is a DETECTIVE control, not a preventive one.
-Preventing the write is the job of the ``_skip_non_trading`` gate in
-``assets.py``; this check answers "did anything get past it, anywhere?".
-
-It sweeps a bounded trailing window (``_LOOKBACK_DAYS``, default 400 calendar
-days) of every scored table and FAILs if any table holds a score_date that is
-not a trading day. The sweep is bounded so the check stays cheap on the daily
-path; ``scripts/check_trading_day_invariant.py`` runs the same logic over full
+``check_trading_day_invariant`` detects; it does not prevent. Preventing the
+write is the job of the ``_skip_non_trading`` gate in ``assets.py``, and this
+check asks whether anything got past it. It sweeps a bounded trailing window
+(``_LOOKBACK_DAYS``, default 400 calendar days) of every scored table and
+FAILs if any table holds a score_date that is not a trading day. The sweep is
+bounded so the check stays cheap on the daily path;
+``scripts/check_trading_day_invariant.py`` runs the same logic over full
 history for audits and emits the corresponding DELETE statements.
 
-CALENDAR
---------
-The calendar is built with EXACTLY the semantics of ``db.is_trading_day``:
+The calendar is built with the same semantics as ``db.is_trading_day``:
 a date is a trading day iff ``ohlcv.prices`` holds more than 100
 ``security_type = 'equity'`` rows for it at ``resolution = 'daily'``. That
 definition yields the NYSE trading calendar: no weekend days, and the
@@ -82,10 +76,6 @@ from dagster import (
 from meridian_pipeline.checks.alerting import alerting_check
 from meridian_pipeline.k8s_config import LIGHT_OP_TAGS
 from meridian_pipeline.risk_metrics_asset import _get_engine
-
-# ---------------------------------------------------------------------------
-# Configuration
-# ---------------------------------------------------------------------------
 
 # Trailing window swept on the daily path. 400 calendar days comfortably
 # covers a multi-month backfill landing behind the daily schedule while
@@ -150,9 +140,7 @@ HAVING COUNT(*) > :min_rows
 """
 
 
-# ---------------------------------------------------------------------------
 # Pure decision helpers (DB-free, unit-tested)
-# ---------------------------------------------------------------------------
 
 
 def non_trading_dates(table_dates: Iterable[date], calendar: Iterable[date]) -> list[date]:
@@ -175,11 +163,6 @@ def invariant_ok(offenders_by_table: Mapping[str, list[date]]) -> tuple[bool, st
         f"{t}: {len(ds)} dates (first {ds[0]}, last {ds[-1]})" for t, ds in sorted(dirty.items())
     ]
     return False, "non-trading-day rows present - " + "; ".join(parts)
-
-
-# ---------------------------------------------------------------------------
-# DB access
-# ---------------------------------------------------------------------------
 
 
 def load_trading_calendar(engine, start: date, end: date) -> set[date]:
@@ -214,11 +197,6 @@ def scan_window(engine, start: date, end: date) -> dict[str, list[date]]:
     for table in SCORED_TABLES:
         out[table] = non_trading_dates(load_table_dates(engine, table, start, end), calendar)
     return out
-
-
-# ---------------------------------------------------------------------------
-# Asset check
-# ---------------------------------------------------------------------------
 
 
 @asset_check(

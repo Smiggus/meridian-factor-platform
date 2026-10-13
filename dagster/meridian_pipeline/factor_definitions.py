@@ -1,20 +1,14 @@
-"""
-factor_definitions.py - SHOWCASE STUB.
+"""Factor catalogue: groups, factor definitions and group weights.
 
-The private repository keeps the factor catalogue here: which factors exist,
-how they are grouped and how the groups are weighted into the composite. That
-catalogue is the research output of the program and is not published.
+This is a minimal placeholder holding a small synthetic catalogue, enough for
+the API and the write path to import and run. The module has four names:
 
-This stub carries the SHAPE of the catalogue so the API and the write path
-import and run against a tiny, obviously synthetic example:
+    FACTOR_GROUPS     group name -> list of factor names
+    FACTOR_MAP        factor name -> (source column, direction, transform)
+    GROUP_WEIGHTS     group name -> composite weight (equal weights here)
+    COMPUTED_FACTORS  factors the pipeline computes rather than ingests
 
-    FACTOR_GROUPS   group name -> list of factor names
-    FACTOR_MAP      factor name -> (source column, direction, transform)
-    GROUP_WEIGHTS   group name -> composite weight (equal weights here)
-    COMPUTED_FACTORS  factors a pipeline computes (as opposed to ingests)
-
-Replace the three literals with your own catalogue to point the service at
-your own factors.
+Edit the first three to point the service at a different set of factors.
 """
 
 from __future__ import annotations

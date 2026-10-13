@@ -1,4 +1,4 @@
-"""The showcase code location loads and its wiring is self-consistent."""
+"""The code location loads and its wiring is self-consistent."""
 
 import sys
 from pathlib import Path

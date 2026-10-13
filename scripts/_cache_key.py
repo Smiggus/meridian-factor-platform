@@ -1,25 +1,20 @@
-"""_cache_key.py - filename-keyed research caches that cannot answer the wrong question.
+"""Cache file names that encode the parameters of the fetch behind them.
 
-The bug this exists to prevent (found in review, and present in several call sites
-across the research scripts at the time):
+Several research scripts had a cache like this:
 
     def _fetch(con, tickers, start, end, cache: Path):
         if cache is not None and cache.exists():
             return pl.read_parquet(cache)      # tickers/start/end IGNORED
         ...
 
-A cache keyed on a FIXED filename while its function takes varying parameters returns
-whatever was cached last, regardless of what was asked for. The failure is silent and
-the output is entirely plausible, because it IS a real result - just the answer to a
-different question. In practice this survives review: the run completes, the numbers
-look reasonable, and the only tell is a shape or row count that does not match the
-window that was requested.
+The file name is fixed but the function takes parameters, so a second call with a different
+window gets the first call's data back. Nothing fails. The numbers are a real result for
+a different question, and the only sign is a row count that does not fit the window you
+asked for. It got through review more than once. A `--force` flag does not help, since
+nobody thinks to pass it.
 
-A `--force` flag does not fix this. It relies on someone remembering, and the failure
-mode is precisely that nothing prompts you to remember.
-
-The fix is to put every parameter that determines the CONTENT into the filename, so a
-parameter change is a cache MISS rather than a wrong answer.
+keyed_path puts every parameter that decides the content into the file name, so changing
+one is a cache miss.
 
     path = keyed_path(base_dir, "z_anchors", source="pg", anchors=anchors)
     # -> <base_dir>/z_anchors__source-pg__anchors-94-a3f19c2b.parquet
@@ -50,11 +45,10 @@ def _fingerprint(value) -> str:
 
 
 def keyed_path(base_dir, stem: str, suffix: str = ".parquet", **params) -> Path:
-    """Cache path whose NAME encodes every content-determining parameter.
+    """Cache path whose name encodes the content-determining parameters.
 
-    Pass every argument the fetch depends on. Anything omitted is, by construction, a
-    parameter the cache cannot distinguish - which is the bug this module exists to
-    prevent, so omit nothing that changes the result.
+    Pass every argument the fetch depends on. The cache cannot tell apart two calls that
+    differ only in a parameter you left out.
     """
     base = Path(base_dir)
     base.mkdir(parents=True, exist_ok=True)

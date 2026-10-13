@@ -1,9 +1,8 @@
-"""Asset-check registry for the showcase code location.
+"""Asset-check registry.
 
-ALL_FACTOR_CHECKS is the path by which standalone `@asset_check` objects reach
-a `Definitions` object. The private repository registers a dozen more checks
-here (factor coverage, group presence and several model-specific checks);
-the showcase ships the three that guard the data the whole pipeline stands on:
+ALL_FACTOR_CHECKS is how standalone `@asset_check` objects reach a
+`Definitions` object. This copy registers the three checks on the data the rest
+of the pipeline reads:
 
   check_ohlcv_read_contract     BLOCKING read-boundary contract on the OHLCV tape
   check_ret1d_input_quality     tripwire for upstream ret_1d corruption

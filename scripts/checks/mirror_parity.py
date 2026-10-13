@@ -132,7 +132,7 @@ def main() -> int:
     if not (parquet_io.MERIDIAN_MINIO_ACCESS_KEY and parquet_io.MERIDIAN_MINIO_SECRET_KEY):
         print("MERIDIAN_MINIO_* unset; cannot reach the mirror")
         return 2
-    # Deliberately NOT meridian_parquet_available(): that probe globs the whole
+    # NOT meridian_parquet_available(): that probe globs the whole
     # tree and is what falls over on a flaky resolver. Read errors surface per
     # cell below instead.
     parquet_io._meridian_con().execute(f"SET threads={args.duckdb_threads}")

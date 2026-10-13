@@ -10,7 +10,7 @@ history. tests/test_ingest_window_guard.py pins the guard's own logic
 (window parsing, boundary behaviour, overrides) against ingest_window.py
 directly and needs no burst dependencies. This module additionally needs
 burst_common - and therefore boto3 (via BurstConfig.s3_client / imports) -
-so it is skipped under CI's slim `test` job, which deliberately does not
+so it is skipped under CI's slim `test` job, which does not
 install boto3 (root requirements.txt / requirements-test.txt), and only
 runs under `test-dagster`, whose image pulls boto3 in transitively via
 dagster-aws[s3].

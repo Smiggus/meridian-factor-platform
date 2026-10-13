@@ -310,7 +310,7 @@ def test_notify_failed_checks_fails_open(monkeypatch):
 # Wiring guards: the alert must actually be reachable from the two call
 # sites, otherwise the transport above is dead code.
 #
-# These READ the source files rather than importing them, deliberately.
+# These READ the source files rather than importing them.
 # Importing meridian_pipeline.assets or .sensors drags in dagster, polars,
 # and (in sensors' case) `requests` - none of which the slim CI `test` image
 # has - which would put these guards behind a skip on the very job where
