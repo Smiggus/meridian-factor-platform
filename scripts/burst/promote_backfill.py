@@ -744,7 +744,7 @@ def main() -> int:
                     flush=True,
                 )
 
-        # Post-promote verification: gold == staged exactly for a sample
+        # Post-promote verification: gold matches staged within 1e-9 for a sample
         import pandas as pd
 
         bad = 0

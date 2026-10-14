@@ -25,12 +25,13 @@ on any rejected row, since the predicate needs close > 0 before it can reject. T
 factor values. It masks the problem and does not repair it, so every substitution is logged at
 WARN.
 
-NaN is a value in PostgreSQL, not a NULL, and it sorts above every other number. A NULL adj_close
-passes through the `IS NULL` clause and COALESCE returns close. A NaN fails `adj_close <= 1.1 *
-close`, so it counts as rejected and is also replaced by close. The numpy mirror splits this up
-differently: is_rejected says False for NaN and True for +inf, and guarded_px swaps NaN for
-close in a separate step. Both paths end with the same price. The guard is one-sided, so -inf,
-zero and negative values are not policed.
+NaN is a value in PostgreSQL, not a NULL (IEEE 754 has no NULL), and it sorts above every other
+number. A NULL
+adj_close passes through the `IS NULL` clause and COALESCE returns close. A NaN fails `adj_close
+<= 1.1 * close`, so it counts as rejected and is also replaced by close. The numpy mirror splits
+this up differently: is_rejected says False for NaN and True for +inf, and guarded_px swaps NaN
+for close in a separate step. Both paths end with the same price. The guard is one-sided, so
+-inf, zero and negative values are not policed.
 """
 
 import logging

@@ -2002,8 +2002,9 @@ class AthCursor:
         the frame - they matter, because `current_entity` is resolved WITHOUT
         the px filter;
       * the adj_close guard SUBSTITUTES the row's own `close` for a rejected
-        adj_close (it does not drop the row - see adj_close_guard.py SEMANTICS,
-        changed 2026-08-03), so `px` is the guarded expression and EVERY
+        adj_close (it does not drop the row - see the Semantics paragraph of the
+        adj_close_guard.py module docstring, changed 2026-08-03), so `px` is the
+        guarded expression and EVERY
         non-NULL px row enters the MAX. That is what keeps the running form
         equal to the aggregate: a substituted row can now legitimately WIN the
         maximum, and an expanding `MAX(px)` with no FILTER admits it at exactly
